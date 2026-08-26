@@ -6,11 +6,15 @@ import { characterEmbed, CHARACTER } from './character.js';
 const USER_COOLDOWN_MS = 20_000;
 const GLOBAL_COOLDOWN_MS = 4_000;
 const MAX_PAYLOAD = 64 * 1024;
+const RELAY_ACTIVE_MS = 12_000;
+const RELAY_QUEUE_LIMIT = 20;
 
 const persistentToken = process.env.MINECRAFT_BRIDGE_TOKEN?.trim() || '';
 const bridgeToken = persistentToken || randomBytes(24).toString('base64url');
 const configuredPublicUrl = process.env.MINECRAFT_BRIDGE_PUBLIC_URL?.trim();
 const bridgePublicUrl = (configuredPublicUrl || 'wss://dc-bot-us5v.onrender.com/minecraft').replace(/\/+$/, '');
+const relayPublicBase = (process.env.MINECRAFT_RELAY_PUBLIC_URL?.trim() || 'https://dc-bot-us5v.onrender.com').replace(/\/+$/, '');
+const relayMinecraftCommand = '/connect ws://127.0.0.1:19131/ws';
 
 const ACTIONS = Object.freeze({
   zombie: {
@@ -71,7 +75,7 @@ export const minecraftCommandBuilder = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('conectar')
-      .setDescription('Mostra ao dono o comando privado para conectar o Minecraft.'),
+      .setDescription('Mostra ao dono como conectar o relay Android ao Minecraft.'),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -109,6 +113,10 @@ let lastUpgradeProtocolOffer = null;
 let lastCloseCode = null;
 let lastCloseReason = null;
 let lastBridgeError = null;
+let relayLastSeenAt = 0;
+let relayConnectedAt = null;
+let relayHadActiveSession = false;
+const relayQueue = [];
 const userCooldowns = new Map();
 
 function safeTokenMatch(candidate) {
@@ -130,8 +138,33 @@ function connectionPathToken(requestUrl) {
   }
 }
 
-function isClientOpen() {
+function isDirectClientOpen() {
   return Boolean(activeClient && activeClient.readyState === 1);
+}
+
+function isRelayActive(now = Date.now()) {
+  return relayLastSeenAt > 0 && now - relayLastSeenAt <= RELAY_ACTIVE_MS;
+}
+
+function reconcileRelayState() {
+  const active = isRelayActive();
+  if (!active && relayHadActiveSession) {
+    relayHadActiveSession = false;
+    relayConnectedAt = null;
+    relayQueue.length = 0;
+    if (!isDirectClientOpen()) interactionsOpen = false;
+  }
+  return active;
+}
+
+function connectionMode() {
+  if (isDirectClientOpen()) return 'direct';
+  if (reconcileRelayState()) return 'android-relay';
+  return null;
+}
+
+function isGameConnected() {
+  return Boolean(connectionMode());
 }
 
 function commandPacket(commandLine) {
@@ -151,29 +184,116 @@ function commandPacket(commandLine) {
   };
 }
 
+function enqueueRelayCommand(commandLine) {
+  if (!reconcileRelayState()) return { ok: false, reason: 'relay_disconnected' };
+  if (relayQueue.length >= RELAY_QUEUE_LIMIT) relayQueue.shift();
+  const command = {
+    id: randomUUID(),
+    commandLine,
+    createdAt: new Date().toISOString(),
+  };
+  relayQueue.push(command);
+  return { ok: true, requestId: command.id, mode: 'android-relay' };
+}
+
 function sendMinecraftCommand(commandLine) {
-  if (!isClientOpen()) return { ok: false, reason: 'disconnected' };
-  const packet = commandPacket(commandLine);
-  activeClient.send(JSON.stringify(packet));
-  return { ok: true, requestId: packet.header.requestId };
+  if (isDirectClientOpen()) {
+    const packet = commandPacket(commandLine);
+    activeClient.send(JSON.stringify(packet));
+    return { ok: true, requestId: packet.header.requestId, mode: 'direct' };
+  }
+  return enqueueRelayCommand(commandLine);
 }
 
 function ownerOnly(interaction) {
   return Boolean(interaction.guild?.ownerId && interaction.user.id === interaction.guild.ownerId);
 }
 
-function connectCommand() {
+function legacyConnectCommand() {
   return `/connect ${bridgePublicUrl}/${bridgeToken}`;
 }
 
+function jsonResponse(res, statusCode, body) {
+  res.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(body));
+}
+
+export function handleMinecraftRelayHttp(req, res) {
+  let url;
+  try {
+    url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return false;
+  }
+
+  if (!url.pathname.startsWith('/minecraft-relay/')) return false;
+
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts.length !== 3 || parts[0] !== 'minecraft-relay' || parts[2] !== 'pull') {
+    jsonResponse(res, 404, { ok: false, error: 'not_found' });
+    return true;
+  }
+
+  if (req.method !== 'GET') {
+    res.setHeader('allow', 'GET');
+    jsonResponse(res, 405, { ok: false, error: 'method_not_allowed' });
+    return true;
+  }
+
+  let candidate;
+  try {
+    candidate = decodeURIComponent(parts[1]);
+  } catch {
+    jsonResponse(res, 401, { ok: false, error: 'unauthorized' });
+    return true;
+  }
+
+  if (!safeTokenMatch(candidate)) {
+    jsonResponse(res, 401, { ok: false, error: 'unauthorized' });
+    return true;
+  }
+
+  const wasActive = isRelayActive();
+  relayLastSeenAt = Date.now();
+  if (!wasActive) {
+    relayConnectedAt = new Date(relayLastSeenAt).toISOString();
+    relayHadActiveSession = true;
+    relayQueue.length = 0;
+    interactionsOpen = false;
+    userCooldowns.clear();
+    lastGlobalActionAt = 0;
+  }
+
+  const command = relayQueue.shift() ?? null;
+  jsonResponse(res, 200, {
+    ok: true,
+    mode: 'android-relay',
+    command,
+    pollAfterMs: 1000,
+  });
+  return true;
+}
+
 export function minecraftBridgeStatus() {
+  const relayConnected = reconcileRelayState();
+  const directConnected = isDirectClientOpen();
+  const mode = directConnected ? 'direct' : relayConnected ? 'android-relay' : null;
   return {
     attached: Boolean(websocketServer),
-    connected: isClientOpen(),
+    connected: directConnected || relayConnected,
+    directConnected,
+    relayConnected,
+    connectionMode: mode,
     interactionsOpen,
-    connectedAt,
+    connectedAt: directConnected ? connectedAt : relayConnectedAt,
     lastMessageAt,
     publicUrl: bridgePublicUrl,
+    relayPublicBase,
+    relayLastSeenAt: relayLastSeenAt ? new Date(relayLastSeenAt).toISOString() : null,
+    relayQueueSize: relayQueue.length,
     persistentToken: Boolean(persistentToken),
     lastUpgradeAt,
     lastUpgradeProtocolOffer,
@@ -186,10 +306,9 @@ export function minecraftBridgeStatus() {
 export function attachMinecraftBridge(httpServer) {
   if (websocketServer) return websocketServer;
 
-  // Bedrock may offer com.microsoft.minecraft.wsencrypt even when encrypted
-  // websockets are not required. The default `ws` behaviour echoes the first
-  // offered subprotocol, which would falsely negotiate Minecraft application-
-  // layer encryption. Explicitly decline subprotocol negotiation here.
+  // Mantém o transporte WSS direto apenas como fallback experimental.
+  // O caminho recomendado no Android é o relay local, que implementa o
+  // protocolo/criptografia específicos do Minecraft Bedrock em ws://localhost.
   websocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_PAYLOAD,
@@ -220,7 +339,7 @@ export function attachMinecraftBridge(httpServer) {
   });
 
   websocketServer.on('connection', (client) => {
-    if (isClientOpen() && activeClient !== client) {
+    if (isDirectClientOpen() && activeClient !== client) {
       activeClient.close(4000, 'Nova conexão Minecraft autenticada');
     }
 
@@ -256,10 +375,6 @@ export function attachMinecraftBridge(httpServer) {
       lastBridgeError = String(error?.message || error).slice(0, 180);
       console.error('Erro na conexão Minecraft WebSocket:', error.message);
     });
-
-    // Não envia pacote automaticamente no handshake. Alguns clientes Bedrock
-    // encerram a sessão se o servidor envia comando antes da inicialização do
-    // protocolo estar concluída. O primeiro comando só sai via /game acao.
   });
 
   websocketServer.on('error', (error) => {
@@ -272,6 +387,11 @@ export function attachMinecraftBridge(httpServer) {
 
 export function stopMinecraftBridge() {
   interactionsOpen = false;
+  relayQueue.length = 0;
+  relayLastSeenAt = 0;
+  relayConnectedAt = null;
+  relayHadActiveSession = false;
+
   if (activeClient) {
     try {
       activeClient.close(1001, 'Bot encerrando');
@@ -292,26 +412,31 @@ export function stopMinecraftBridge() {
 
 function diagnosticLine(status) {
   if (status.connected) return null;
-  if (status.lastBridgeError) return `🧪 **Diagnóstico:** ${status.lastBridgeError}`;
+  if (status.lastBridgeError) return `🧪 **WSS direto:** ${status.lastBridgeError}`;
   if (status.lastCloseCode !== null) {
     const reason = status.lastCloseReason ? ` • ${status.lastCloseReason}` : '';
-    return `🧪 **Último fechamento:** código ${status.lastCloseCode}${reason}`;
+    return `🧪 **Último WSS direto:** código ${status.lastCloseCode}${reason}`;
   }
-  if (status.lastUpgradeAt) return '🧪 **Diagnóstico:** handshake recebido; aguardando nova tentativa.';
-  return null;
+  return '📱 **Relay Android:** aguardando o relay local conectar ao Minecraft.';
 }
 
 function statusDescription(status) {
   const diagnostic = diagnosticLine(status);
+  const mode = status.connectionMode === 'android-relay'
+    ? '📱 relay Android local'
+    : status.connectionMode === 'direct'
+      ? '🌐 WSS direto (experimental)'
+      : 'nenhum';
   return [
     `🎮 **Minecraft:** ${status.connected ? '🟢 conectado' : '🔴 desconectado'}`,
+    `📡 **Modo:** ${mode}`,
     `🎛️ **Interações:** ${status.interactionsOpen ? '🟢 abertas' : '🔒 fechadas'}`,
     `🔐 **Ponte:** ${status.attached ? 'ativa' : 'inativa'}`,
     diagnostic,
     '',
     status.connected
       ? 'O mundo está conectado. O dono pode usar `/game abrir` para liberar as ações da comunidade.'
-      : 'O dono precisa usar `/game conectar` e executar o comando mostrado dentro do Minecraft.',
+      : 'No Android, inicie o relay local e depois execute o comando local mostrado por `/game conectar` dentro do Minecraft.',
   ].filter(Boolean).join('\n');
 }
 
@@ -345,10 +470,18 @@ export async function handleMinecraftCommand(interaction) {
 
     await interaction.reply({
       content: [
-        '🎮 **No Minecraft Bedrock, dentro do seu mundo com cheats ativados, execute:**',
-        `\`${connectCommand()}\``,
+        '📱 **Modo recomendado no Android: Relay local**',
         '',
-        'Deixe **Exigir WebSockets criptografados** desativado. Essa resposta é privada; não compartilhe o comando porque ele contém a chave da ponte.',
+        `**Servidor do bot:** \`${relayPublicBase}\``,
+        `**Chave privada do relay:** \`${bridgeToken}\``,
+        `**Comando dentro do Minecraft:** \`${relayMinecraftCommand}\``,
+        '',
+        '1. Inicie o relay MiojoPlays no Android usando o servidor e a chave acima.',
+        '2. Entre no mundo com cheats ativados.',
+        '3. Execute o comando local acima no Minecraft.',
+        '4. Confira com `/game status` e depois use `/game abrir`.',
+        '',
+        '⚠️ Não compartilhe a chave. O WSS direto antigo fica apenas como fallback experimental.',
       ].join('\n'),
       flags: MessageFlags.Ephemeral,
     });
@@ -364,7 +497,7 @@ export async function handleMinecraftCommand(interaction) {
       return true;
     }
 
-    if (subcommand === 'abrir' && !isClientOpen()) {
+    if (subcommand === 'abrir' && !isGameConnected()) {
       await interaction.reply({
         content: '❌ O Minecraft ainda não está conectado. Use `/game conectar` primeiro.',
         flags: MessageFlags.Ephemeral,
@@ -376,6 +509,7 @@ export async function handleMinecraftCommand(interaction) {
     if (!interactionsOpen) {
       userCooldowns.clear();
       lastGlobalActionAt = 0;
+      relayQueue.length = 0;
     }
 
     await interaction.reply({
@@ -387,7 +521,7 @@ export async function handleMinecraftCommand(interaction) {
   }
 
   if (subcommand === 'acao') {
-    if (!isClientOpen()) {
+    if (!isGameConnected()) {
       await interaction.reply({
         content: '🎮 O Minecraft não está conectado agora.',
         flags: MessageFlags.Ephemeral,
@@ -444,7 +578,7 @@ export async function handleMinecraftCommand(interaction) {
     await interaction.reply({
       embeds: [characterEmbed({
         title: `🎮 ${action.label}`,
-        description: `**${interaction.user.username}** ativou uma interação no Minecraft.\n\n${action.description}`,
+        description: `**${interaction.user.username}** ativou uma interação no Minecraft.\n\n${action.description}\n\n📡 Enviado via **${sent.mode === 'android-relay' ? 'relay Android' : 'WSS direto'}**.`,
         color: CHARACTER.palette.accent,
       })],
     });
@@ -452,4 +586,13 @@ export async function handleMinecraftCommand(interaction) {
   }
 
   return true;
+}
+
+export function minecraftRelayPrivateConfig() {
+  return {
+    server: relayPublicBase,
+    token: bridgeToken,
+    minecraftCommand: relayMinecraftCommand,
+    legacyDirectCommand: legacyConnectCommand(),
+  };
 }

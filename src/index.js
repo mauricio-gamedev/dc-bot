@@ -20,6 +20,7 @@ import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
 import {
   attachMinecraftBridge,
   handleMinecraftCommand,
+  handleMinecraftRelayHttp,
   minecraftBridgeStatus,
   minecraftCommandData,
   stopMinecraftBridge,
@@ -60,6 +61,8 @@ const client = new Client({ intents });
 attachLogging(client);
 
 const healthServer = http.createServer((req, res) => {
+  if (handleMinecraftRelayHttp(req, res)) return;
+
   const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
 
   if (path !== '/' && path !== '/health') {
@@ -74,7 +77,7 @@ const healthServer = http.createServer((req, res) => {
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
-    version: '0.5.0',
+    version: '0.5.1',
     character: CHARACTER.name,
     discord: ready ? 'online' : 'connecting',
     kickLive: {
@@ -88,8 +91,13 @@ const healthServer = http.createServer((req, res) => {
     minecraftInteractive: {
       bridge: minecraft.attached,
       connected: minecraft.connected,
+      mode: minecraft.connectionMode,
+      directConnected: minecraft.directConnected,
+      relayConnected: minecraft.relayConnected,
       interactionsOpen: minecraft.interactionsOpen,
       connectedAt: minecraft.connectedAt,
+      relayLastSeenAt: minecraft.relayLastSeenAt,
+      relayQueueSize: minecraft.relayQueueSize,
     },
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
