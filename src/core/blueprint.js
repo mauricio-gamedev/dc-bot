@@ -103,6 +103,7 @@ export const CATEGORY_BLUEPRINT = [
       { name: '🎬・clips', type: ChannelType.GuildText, topic: 'Clipes e momentos marcantes.' },
       { name: '😂・memes', type: ChannelType.GuildText, topic: 'Memes e conteúdo descontraído.' },
       { name: '💡・sugestões', type: ChannelType.GuildText, topic: 'Sugestões para melhorar o servidor e as lives.' },
+      { name: '🏆・ranking', type: ChannelType.GuildText, readOnly: true, topic: 'Ranking de XP, reputação e MiojoCoins da comunidade.' },
     ],
   },
   {
@@ -152,9 +153,11 @@ export const CATEGORY_BLUEPRINT = [
     staffOnly: true,
     channels: [
       { name: '🛡️・staff-chat', type: ChannelType.GuildText, topic: 'Comunicação interna da equipe.' },
-      { name: '📋・mod-logs', type: ChannelType.GuildText, readOnly: true, topic: 'Registro de ações e eventos administrativos.' },
+      { name: '📋・mod-logs', type: ChannelType.GuildText, readOnly: true, topic: 'Registro automático de ações administrativas e segurança.' },
+      { name: '📥・member-logs', type: ChannelType.GuildText, readOnly: true, topic: 'Entradas e saídas registradas automaticamente.' },
       { name: '🚨・denúncias', type: ChannelType.GuildText, topic: 'Triagem interna de denúncias e ocorrências.' },
       { name: '🤖・bot-comandos', type: ChannelType.GuildText, topic: 'Canal reservado para comandos e manutenção do bot.' },
+      { name: '🗄️・bot-data', type: ChannelType.GuildText, systemOnly: true, topic: 'Persistência interna do bot. Não edite nem apague mensagens deste canal.' },
       { name: '🔒・Staff', type: ChannelType.GuildVoice },
     ],
   },
