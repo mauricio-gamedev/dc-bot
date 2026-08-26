@@ -1,13 +1,13 @@
 {
   "name": "miojoplays-community-bot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Professional Discord community setup, moderation and engagement bot for MiojoPlays.",
+  "description": "Professional Discord community, moderation, progression and character bot for MiojoPlays.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/commands.js && node --check src/core/blueprint.js && node --check src/core/guildBuilder.js && node --check src/core/tickets.js && node --check src/core/communityStore.js && node --check src/core/progression.js && node --check src/core/logging.js && node --check src/core/automod.js"
+    "check": "node --check src/index.js && node --check src/commands.js && node --check src/core/blueprint.js && node --check src/core/guildBuilder.js && node --check src/core/tickets.js && node --check src/core/communityStore.js && node --check src/core/progression.js && node --check src/core/logging.js && node --check src/core/automod.js && node --check src/core/character.js && node --check src/core/communityV3.js"
   },
   "engines": {
     "node": ">=20"
