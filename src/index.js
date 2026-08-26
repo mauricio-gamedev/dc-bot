@@ -18,6 +18,13 @@ import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.
 import { eventCommandBuilder, handleEventButton, handleEventCommand } from './core/eventAgenda.js';
 import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
 import {
+  attachMinecraftBridge,
+  handleMinecraftCommand,
+  minecraftBridgeStatus,
+  minecraftCommandData,
+  stopMinecraftBridge,
+} from './core/minecraftInteractive.js';
+import {
   handleKickLiveButton,
   kickLiveStatus,
   startKickLiveWatcher,
@@ -34,6 +41,7 @@ const registeredCommandData = [
   ownerCoinCommandData,
   eventCommandBuilder.toJSON(),
   ...sealCommandData,
+  minecraftCommandData,
 ];
 
 if (!token) {
@@ -62,6 +70,7 @@ const healthServer = http.createServer((req, res) => {
 
   const ready = client.isReady();
   const kick = kickLiveStatus();
+  const minecraft = minecraftBridgeStatus();
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
@@ -76,6 +85,12 @@ const healthServer = http.createServer((req, res) => {
       slug: kick.slug,
       sessionKey: kick.sessionKey,
     },
+    minecraftInteractive: {
+      bridge: minecraft.attached,
+      connected: minecraft.connected,
+      interactionsOpen: minecraft.interactionsOpen,
+      connectedAt: minecraft.connectedAt,
+    },
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
   };
@@ -87,6 +102,7 @@ const healthServer = http.createServer((req, res) => {
   res.end(JSON.stringify(body));
 });
 
+attachMinecraftBridge(healthServer);
 healthServer.listen(port, '0.0.0.0', () => {
   console.log(`Health server ativo na porta ${port}.`);
 });
@@ -137,6 +153,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
+    if (await handleMinecraftCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
     if (await handleSetupButton(interaction)) return;
@@ -200,6 +217,7 @@ async function shutdown(signal) {
   console.log(`${signal} recebido. Persistindo dados e encerrando com segurança...`);
 
   stopKickLiveWatcher();
+  stopMinecraftBridge();
   await flushAllProfiles(client).catch((error) => {
     console.error('Falha ao persistir perfis no shutdown:', error);
   });
