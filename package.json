@@ -1,0 +1,19 @@
+{
+  "name": "miojoplays-community-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Professional Discord community setup and management bot for MiojoPlays.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/commands.js && node --check src/core/blueprint.js && node --check src/core/guildBuilder.js && node --check src/core/tickets.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1"
+  }
+}
