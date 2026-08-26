@@ -14,7 +14,12 @@ import { handleMessageProgress } from './core/progression.js';
 import { flushAllProfiles } from './core/communityStore.js';
 import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
 import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
-import { kickLiveStatus, startKickLiveWatcher, stopKickLiveWatcher } from './core/kickLive.js';
+import {
+  handleKickLiveButton,
+  kickLiveStatus,
+  startKickLiveWatcher,
+  stopKickLiveWatcher,
+} from './core/kickLive.js';
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
@@ -60,6 +65,7 @@ const healthServer = http.createServer((req, res) => {
       polling: kick.polling,
       live: Boolean(kick.lastState?.isLive),
       slug: kick.slug,
+      sessionKey: kick.sessionKey,
     },
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
@@ -117,6 +123,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleKickLiveButton(interaction)) return;
     if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
     if (await handleSetupButton(interaction)) return;

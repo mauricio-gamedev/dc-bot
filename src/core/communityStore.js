@@ -23,6 +23,8 @@ function defaultProfile(userId) {
     missionDaily: false,
     missionRep: false,
     missionClaimed: [],
+    liveAttendanceCount: 0,
+    liveAttendanceSessions: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -39,17 +41,20 @@ function normalizeProfile(userId, raw = {}) {
 
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
-    'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'createdAt', 'updatedAt',
+    'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'liveAttendanceCount',
+    'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
     data[key] = Number.isFinite(value) ? value : base[key];
   }
 
+  data.liveAttendanceCount = Math.max(0, Math.floor(data.liveAttendanceCount));
   data.title = typeof data.title === 'string' && data.title.length <= 80 ? data.title : base.title;
   data.ownedTitles = normalizeStringArray(data.ownedTitles);
   data.achievements = normalizeStringArray(data.achievements);
   data.inventory = normalizeStringArray(data.inventory);
   data.missionClaimed = normalizeStringArray(data.missionClaimed);
+  data.liveAttendanceSessions = normalizeStringArray(data.liveAttendanceSessions).slice(-100);
   data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
   data.missionDaily = Boolean(data.missionDaily);
   data.missionRep = Boolean(data.missionRep);
@@ -152,6 +157,8 @@ function serializeProfile(profile) {
     missionDaily: profile.missionDaily,
     missionRep: profile.missionRep,
     missionClaimed: profile.missionClaimed,
+    liveAttendanceCount: profile.liveAttendanceCount,
+    liveAttendanceSessions: profile.liveAttendanceSessions,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
