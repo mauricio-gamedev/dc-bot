@@ -14,21 +14,46 @@ function defaultProfile(userId) {
     lastXpAt: 0,
     lastDailyAt: 0,
     lastRepGivenAt: 0,
+    title: 'Sem título',
+    ownedTitles: [],
+    achievements: [],
+    inventory: [],
+    missionDate: '',
+    missionMessages: 0,
+    missionDaily: false,
+    missionRep: false,
+    missionClaimed: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
 }
 
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item) => typeof item === 'string' && item.length <= 80))];
+}
+
 function normalizeProfile(userId, raw = {}) {
   const base = defaultProfile(userId);
   const data = { ...base, ...raw, userId };
+
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
-    'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'createdAt', 'updatedAt',
+    'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
     data[key] = Number.isFinite(value) ? value : base[key];
   }
+
+  data.title = typeof data.title === 'string' && data.title.length <= 80 ? data.title : base.title;
+  data.ownedTitles = normalizeStringArray(data.ownedTitles);
+  data.achievements = normalizeStringArray(data.achievements);
+  data.inventory = normalizeStringArray(data.inventory);
+  data.missionClaimed = normalizeStringArray(data.missionClaimed);
+  data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
+  data.missionDaily = Boolean(data.missionDaily);
+  data.missionRep = Boolean(data.missionRep);
+
   return data;
 }
 
@@ -118,6 +143,15 @@ function serializeProfile(profile) {
     lastXpAt: profile.lastXpAt,
     lastDailyAt: profile.lastDailyAt,
     lastRepGivenAt: profile.lastRepGivenAt,
+    title: profile.title,
+    ownedTitles: profile.ownedTitles,
+    achievements: profile.achievements,
+    inventory: profile.inventory,
+    missionDate: profile.missionDate,
+    missionMessages: profile.missionMessages,
+    missionDaily: profile.missionDaily,
+    missionRep: profile.missionRep,
+    missionClaimed: profile.missionClaimed,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
