@@ -14,6 +14,7 @@ import { handleMessageProgress } from './core/progression.js';
 import { flushAllProfiles } from './core/communityStore.js';
 import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
 import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
+import { kickLiveStatus, startKickLiveWatcher, stopKickLiveWatcher } from './core/kickLive.js';
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
@@ -46,12 +47,20 @@ const healthServer = http.createServer((req, res) => {
   }
 
   const ready = client.isReady();
+  const kick = kickLiveStatus();
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
-    version: '0.3.0',
+    version: '0.4.0',
     character: CHARACTER.name,
     discord: ready ? 'online' : 'connecting',
+    kickLive: {
+      enabled: kick.enabled,
+      configured: kick.configured,
+      polling: kick.polling,
+      live: Boolean(kick.lastState?.isLive),
+      slug: kick.slug,
+    },
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
   };
@@ -95,11 +104,12 @@ async function ensurePanels() {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Online como ${readyClient.user.tag}.`);
-  readyClient.user.setActivity(`${CHARACTER.name} protege a comunidade 🐈‍⬛`, { type: ActivityType.Watching });
+  readyClient.user.setActivity(`${CHARACTER.name} protege a comunidade`, { type: ActivityType.Watching });
 
   try {
     await registerCommands();
     await ensurePanels();
+    startKickLiveWatcher(client);
   } catch (error) {
     console.error('Falha no bootstrap do bot:', error);
   }
@@ -149,9 +159,10 @@ if (enableMemberEvents) {
         await welcome.send({
           content: `<@${member.id}>`,
           embeds: [characterEmbed({
-            title: `🐈‍⬛ ${CHARACTER.name} recebeu um novo membro`,
+            title: `${CHARACTER.name} recebeu um novo membro`,
             description: `${characterLine('welcome', member.user.username)}\n\n📜 Leia as regras, escolha seus cargos e aproveita a comunidade.`,
             color: CHARACTER.palette.success,
+            presentation: 'hero',
           })],
           allowedMentions: { users: [member.id] },
         });
@@ -168,6 +179,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`${signal} recebido. Persistindo dados e encerrando com segurança...`);
 
+  stopKickLiveWatcher();
   await flushAllProfiles(client).catch((error) => {
     console.error('Falha ao persistir perfis no shutdown:', error);
   });
