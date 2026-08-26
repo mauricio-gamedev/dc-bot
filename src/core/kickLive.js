@@ -1,9 +1,18 @@
-import { ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import {
+  ActivityType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  MessageFlags,
+} from 'discord.js';
 import { characterEmbed, characterLine, CHARACTER } from './character.js';
+import { mutateProfile } from './communityStore.js';
 
 const KICK_API = 'https://api.kick.com';
 const KICK_OAUTH = 'https://id.kick.com/oauth/token';
 const DEFAULT_INTERVAL_MS = 90_000;
+const LIVE_ATTENDANCE_REWARD = 100;
+const MAX_ATTENDANCE_HISTORY = 100;
 
 let appToken = null;
 let appTokenExpiresAt = 0;
@@ -30,6 +39,19 @@ function config() {
   };
 }
 
+function stateSessionKey(state) {
+  const startedAt = state?.startedAt ? new Date(state.startedAt).getTime() : Number.NaN;
+  if (Number.isFinite(startedAt) && startedAt > 0) {
+    return `t${Math.floor(startedAt / 1000).toString(36)}`;
+  }
+
+  const identity = String(state?.broadcasterUserId || state?.slug || 'live')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 24) || 'live';
+  const window = Math.floor(Date.now() / (6 * 60 * 60_000)).toString(36);
+  return `f${identity}-${window}`;
+}
+
 export function kickLiveStatus() {
   const current = config();
   return {
@@ -39,6 +61,7 @@ export function kickLiveStatus() {
     polling: Boolean(pollTimer),
     lastCheckedAt,
     lastError,
+    sessionKey: lastState?.isLive ? stateSessionKey(lastState) : null,
     lastState,
   };
 }
@@ -190,7 +213,6 @@ async function announceLive(client, guild, state) {
   const role = liveRole(guild);
   const url = liveUrl(state);
 
-  // Impede anúncio duplicado mesmo se o Render reiniciar durante a mesma transmissão.
   if (await alreadyAnnounced(channel, state, url)) {
     setLivePresence(client, state);
     return false;
@@ -202,6 +224,8 @@ async function announceLive(client, guild, state) {
     `**${state.title}**`,
     `🎮 ${state.category}`,
     state.viewerCount > 0 ? `👁️ ${state.viewerCount.toLocaleString('pt-BR')} assistindo agora` : null,
+    '',
+    `💜 Marque presença nesta live e receba **${LIVE_ATTENDANCE_REWARD} MiojoCoins** uma única vez.`,
   ].filter(Boolean).join('\n');
 
   const embed = characterEmbed({
@@ -223,6 +247,11 @@ async function announceLive(client, guild, state) {
       .setLabel('Assistir na Kick')
       .setStyle(ButtonStyle.Link)
       .setURL(url),
+    new ButtonBuilder()
+      .setCustomId(`kicklive:attendance:${stateSessionKey(state)}`)
+      .setLabel('Marcar presença')
+      .setEmoji('💜')
+      .setStyle(ButtonStyle.Primary),
   );
 
   await channel.send({
@@ -233,6 +262,54 @@ async function announceLive(client, guild, state) {
   });
 
   setLivePresence(client, state);
+  return true;
+}
+
+export async function handleKickLiveButton(interaction) {
+  if (!interaction.isButton() || !interaction.customId.startsWith('kicklive:attendance:')) return false;
+  if (!interaction.guild) return true;
+
+  const sessionKey = interaction.customId.slice('kicklive:attendance:'.length);
+  const currentState = lastState;
+  if (!currentState?.isLive || stateSessionKey(currentState) !== sessionKey) {
+    await interaction.reply({
+      content: 'Essa transmissão já encerrou ou não é mais a live ativa.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  let rewarded = false;
+  let attendanceCount = 0;
+  const profile = await mutateProfile(interaction.guild, interaction.user.id, (data) => {
+    if (!Array.isArray(data.liveAttendanceSessions)) data.liveAttendanceSessions = [];
+    attendanceCount = Math.max(0, Number(data.liveAttendanceCount) || 0);
+
+    if (data.liveAttendanceSessions.includes(sessionKey)) return;
+
+    data.liveAttendanceSessions.push(sessionKey);
+    if (data.liveAttendanceSessions.length > MAX_ATTENDANCE_HISTORY) {
+      data.liveAttendanceSessions.splice(0, data.liveAttendanceSessions.length - MAX_ATTENDANCE_HISTORY);
+    }
+
+    data.liveAttendanceCount = attendanceCount + 1;
+    data.coins = Math.max(0, Number(data.coins) || 0) + LIVE_ATTENDANCE_REWARD;
+    attendanceCount = data.liveAttendanceCount;
+    rewarded = true;
+  }, { immediate: true });
+
+  if (!rewarded) {
+    await interaction.reply({
+      content: `💜 Sua presença nesta live já foi registrada. Total: **${attendanceCount}**.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  await interaction.reply({
+    content: `💜 Presença registrada! **+${LIVE_ATTENDANCE_REWARD} MiojoCoins** • presença #**${attendanceCount}** • saldo **${profile.coins}**.`,
+    flags: MessageFlags.Ephemeral,
+  });
   return true;
 }
 
@@ -248,8 +325,10 @@ async function poll(client) {
     const wasLive = Boolean(lastState?.isLive);
     const nowLive = Boolean(state.isLive);
 
-    // Na primeira consulta após um restart, também verifica se a live atual já foi anunciada.
-    if (nowLive && (!wasLive || !lastState)) {
+    // Atualiza o estado antes do anúncio para o botão já nascer associado à sessão ativa.
+    lastState = state;
+
+    if (nowLive && !wasLive) {
       for (const guild of client.guilds.cache.values()) {
         await guild.channels.fetch().catch(() => {});
         await guild.roles.fetch().catch(() => {});
@@ -263,7 +342,6 @@ async function poll(client) {
       setLivePresence(client, state);
     }
 
-    lastState = state;
     lastError = null;
   } catch (error) {
     lastError = error.message;
@@ -294,8 +372,9 @@ export function startKickLiveWatcher(client) {
 }
 
 export function stopKickLiveWatcher() {
-  if (!pollTimer) return;
-  clearInterval(pollTimer);
-  pollTimer = null;
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
   clearAppToken();
 }
