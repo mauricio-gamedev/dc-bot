@@ -11,6 +11,8 @@ import { BRAND } from './blueprint.js';
 import { characterEmbed, CHARACTER, characterLine } from './character.js';
 import { getProfile, mutateProfile } from './communityStore.js';
 
+const SELF_ROLE_MARKER = 'MIOJO_SELF_ROLES_V3';
+
 export const SELF_ROLES = [
   { id: 'games', role: '🎮・Games', emoji: '🎮', label: 'Games' },
   { id: 'lives', role: '🔴・Lives', emoji: '🔴', label: 'Lives' },
@@ -76,16 +78,21 @@ export async function recordMissionRep(guild, userId) {
 }
 
 export async function refreshAchievements(guild, userId) {
-  const unlocked = [];
+  const current = await getProfile(guild, userId);
+  const unlocked = ACHIEVEMENTS.filter(
+    (achievement) => !current.achievements.includes(achievement.id) && achievement.check(current),
+  );
+
+  if (!unlocked.length) return { profile: current, unlocked: [] };
+
   const profile = await mutateProfile(guild, userId, (data) => {
-    for (const achievement of ACHIEVEMENTS) {
+    for (const achievement of unlocked) {
       if (data.achievements.includes(achievement.id)) continue;
-      if (!achievement.check(data)) continue;
       data.achievements.push(achievement.id);
       data.coins += 75;
-      unlocked.push(achievement);
     }
-  }, { immediate: unlocked.length > 0 });
+  }, { immediate: true });
+
   return { profile, unlocked };
 }
 
@@ -99,6 +106,7 @@ function missionCompleted(profile, missionId) {
 export async function claimMission(guild, userId, missionId) {
   const mission = MISSIONS.find((item) => item.id === missionId);
   if (!mission) return { ok: false, reason: 'not_found' };
+
   const profile = await getProfile(guild, userId);
   ensureMissionDay(profile);
   if (profile.missionClaimed.includes(missionId)) return { ok: false, reason: 'claimed', mission };
@@ -111,6 +119,7 @@ export async function claimMission(guild, userId, missionId) {
       data.coins += mission.reward;
     }
   }, { immediate: true });
+
   return { ok: true, mission, profile: updated };
 }
 
@@ -120,10 +129,10 @@ export function buildMissionsEmbed(profile) {
     const done = missionCompleted(profile, mission.id);
     const claimed = profile.missionClaimed.includes(mission.id);
     const status = claimed ? '✅ Coletada' : done ? '🎁 Pronta' : '⬜ Em progresso';
-    let progress = '';
-    if (mission.id === 'chat_5') progress = ` (${Math.min(profile.missionMessages, 5)}/5)`;
+    const progress = mission.id === 'chat_5' ? ` (${Math.min(profile.missionMessages, 5)}/5)` : '';
     return `**${mission.name}** — ${status}${progress}\n${mission.description} • 🍜 ${mission.reward}`;
   });
+
   return characterEmbed({
     title: '🎯 Missões do dia',
     description: `${lines.join('\n\n')}\n\nUse \`/missao coletar\` para receber uma missão concluída.`,
@@ -135,6 +144,7 @@ export function buildAchievementsEmbed(profile) {
     const unlocked = profile.achievements.includes(achievement.id);
     return `${unlocked ? achievement.emoji : '🔒'} **${achievement.name}** ${unlocked ? '— desbloqueada' : '— bloqueada'}`;
   });
+
   return characterEmbed({
     title: '🏅 Conquistas',
     description: lines.join('\n'),
@@ -144,17 +154,19 @@ export function buildAchievementsEmbed(profile) {
 export function buildShopEmbed(profile) {
   const lines = SHOP_ITEMS.map((item) => {
     const owned = profile.ownedTitles.includes(item.value);
-    return `**${item.name}** — 🍜 **${item.price}**${owned ? ' • ✅ comprado' : ''}\n${item.description}\nID: \`${item.id}\``;
+    return `**${item.name}** — 🍜 **${item.price}**${owned ? ' • ✅ comprado' : ''}\n${item.description}`;
   });
+
   return characterEmbed({
     title: '🛒 Loja de MiojoCoins',
-    description: `Saldo: 🍜 **${profile.coins.toLocaleString('pt-BR')}**\n\n${lines.join('\n\n')}\n\nCompre com \`/comprar item:<id>\`.`,
+    description: `Saldo: 🍜 **${profile.coins.toLocaleString('pt-BR')}**\n\n${lines.join('\n\n')}\n\nUse \`/comprar\` para escolher um item.`,
   });
 }
 
 export async function buyShopItem(guild, userId, itemId) {
   const item = SHOP_ITEMS.find((candidate) => candidate.id === itemId);
   if (!item) return { ok: false, reason: 'not_found' };
+
   const profile = await getProfile(guild, userId);
   if (profile.ownedTitles.includes(item.value)) return { ok: false, reason: 'owned', item, profile };
   if (profile.coins < item.price) return { ok: false, reason: 'funds', item, profile };
@@ -164,29 +176,39 @@ export async function buyShopItem(guild, userId, itemId) {
     data.ownedTitles.push(item.value);
     if (!data.inventory.includes(item.id)) data.inventory.push(item.id);
   }, { immediate: true });
+
   return { ok: true, item, profile: updated };
 }
 
 export async function equipTitle(guild, userId, title) {
   const profile = await getProfile(guild, userId);
   if (title === 'Sem título') {
-    const updated = await mutateProfile(guild, userId, (data) => { data.title = 'Sem título'; }, { immediate: true });
+    const updated = await mutateProfile(guild, userId, (data) => {
+      data.title = 'Sem título';
+    }, { immediate: true });
     return { ok: true, profile: updated };
   }
+
   if (!profile.ownedTitles.includes(title)) return { ok: false, reason: 'not_owned', profile };
-  const updated = await mutateProfile(guild, userId, (data) => { data.title = title; }, { immediate: true });
+  const updated = await mutateProfile(guild, userId, (data) => {
+    data.title = title;
+  }, { immediate: true });
   return { ok: true, profile: updated };
 }
 
 export async function ensureSelfRolePanel(guild, channel) {
   if (!channel?.isTextBased()) return false;
+
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  const existing = recent?.find((message) => message.author.id === guild.members.me?.id && message.content.includes('MIOJO_SELF_ROLES_V3'));
+  const existing = recent?.find((message) =>
+    message.author.id === guild.members.me?.id &&
+    message.embeds.some((embed) => embed.footer?.text?.includes(SELF_ROLE_MARKER)),
+  );
   if (existing) return false;
 
-  const rows = [new ActionRowBuilder()];
+  const row = new ActionRowBuilder();
   for (const spec of SELF_ROLES) {
-    rows[0].addComponents(
+    row.addComponents(
       new ButtonBuilder()
         .setCustomId(`selfrole:${spec.id}`)
         .setLabel(spec.label)
@@ -196,12 +218,12 @@ export async function ensureSelfRolePanel(guild, channel) {
   }
 
   await channel.send({
-    content: 'MIOJO_SELF_ROLES_V3',
     embeds: [characterEmbed({
       title: '🎭 Escolha seus cargos',
       description: 'Clique nos botões para ativar ou remover cargos de interesse. Você pode trocar quando quiser.',
+      footer: `${BRAND.footer} • ${SELF_ROLE_MARKER}`,
     })],
-    components: rows,
+    components: [row],
   });
   return true;
 }
@@ -213,6 +235,7 @@ export async function handleV3Button(interaction) {
     const id = interaction.customId.split(':')[1];
     const spec = SELF_ROLES.find((item) => item.id === id);
     if (!spec) return true;
+
     const role = interaction.guild.roles.cache.find((candidate) => candidate.name === spec.role);
     const member = interaction.member;
     if (!role || !member?.roles) {
@@ -223,20 +246,13 @@ export async function handleV3Button(interaction) {
       await interaction.reply({ content: 'Meu cargo precisa ficar acima dos cargos de auto-seleção.', flags: MessageFlags.Ephemeral });
       return true;
     }
+
     const has = member.roles.cache.has(role.id);
     if (has) await member.roles.remove(role, 'Auto-cargo removido pelo membro');
     else await member.roles.add(role, 'Auto-cargo escolhido pelo membro');
+
     await interaction.reply({
       content: `${has ? '➖ Removido' : '✅ Adicionado'}: **${role.name}**`,
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  if (interaction.customId.startsWith('suggestion:vote:')) {
-    const [, , direction] = interaction.customId.split(':');
-    await interaction.reply({
-      content: direction === 'up' ? '👍 Seu apoio foi registrado pela reação do post.' : '👎 Sua opinião foi registrada pela reação do post.',
       flags: MessageFlags.Ephemeral,
     });
     return true;
@@ -247,9 +263,16 @@ export async function handleV3Button(interaction) {
       await interaction.reply({ content: 'Somente a staff pode mudar o status.', flags: MessageFlags.Ephemeral });
       return true;
     }
+
     const status = interaction.customId.split(':')[2];
-    const label = status === 'approved' ? '✅ Aprovada' : status === 'rejected' ? '❌ Rejeitada' : '🟡 Em análise';
-    const embed = EmbedBuilder.from(interaction.message.embeds[0]).setFooter({ text: `${BRAND.footer} • ${label}` });
+    const label = status === 'approved'
+      ? '✅ Aprovada'
+      : status === 'rejected'
+        ? '❌ Rejeitada'
+        : '🟡 Em análise';
+
+    const embed = EmbedBuilder.from(interaction.message.embeds[0])
+      .setFooter({ text: `${BRAND.footer} • ${label}` });
     await interaction.update({ embeds: [embed], components: interaction.message.components });
     return true;
   }
@@ -258,12 +281,14 @@ export async function handleV3Button(interaction) {
 }
 
 export async function postSuggestion(interaction, text) {
-  const channel = interaction.guild.channels.cache.find((candidate) => candidate.name === '💡・sugestões' && candidate.isTextBased());
+  const channel = interaction.guild.channels.cache.find(
+    (candidate) => candidate.name === '💡・sugestões' && candidate.isTextBased(),
+  );
   if (!channel) return { ok: false };
 
   const embed = characterEmbed({
     title: '💡 Nova sugestão',
-    description: text,
+    description: `${text}\n\n**Vote usando as reações 👍 ou 👎 abaixo.**`,
     thumbnail: false,
     footer: `${BRAND.footer} • 🟡 Em análise`,
   }).setAuthor({
@@ -271,45 +296,83 @@ export async function postSuggestion(interaction, text) {
     iconURL: interaction.user.displayAvatarURL({ size: 128 }),
   });
 
-  const voteRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('suggestion:vote:up').setLabel('Apoiar').setEmoji('👍').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('suggestion:vote:down').setLabel('Discordar').setEmoji('👎').setStyle(ButtonStyle.Secondary),
-  );
   const staffRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('suggestion:status:review').setLabel('Em análise').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('suggestion:status:approved').setLabel('Aprovar').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId('suggestion:status:rejected').setLabel('Rejeitar').setStyle(ButtonStyle.Danger),
   );
 
-  const sent = await channel.send({ embeds: [embed], components: [voteRow, staffRow] });
+  const sent = await channel.send({ embeds: [embed], components: [staffRow] });
   await sent.react('👍').catch(() => {});
   await sent.react('👎').catch(() => {});
   return { ok: true, channel, message: sent };
 }
 
 export const v3CommandBuilders = [
-  new SlashCommandBuilder().setName('loja').setDescription('Abre a loja de MiojoCoins.'),
+  new SlashCommandBuilder()
+    .setName('loja')
+    .setDescription('Abre a loja de MiojoCoins.'),
+
   new SlashCommandBuilder()
     .setName('comprar')
     .setDescription('Compra um item da loja.')
-    .addStringOption((option) => option.setName('item').setDescription('ID do item da loja.').setRequired(true).setMaxLength(60)),
+    .addStringOption((option) =>
+      option
+        .setName('item')
+        .setDescription('Escolha um item.')
+        .setRequired(true)
+        .addChoices(...SHOP_ITEMS.map((item) => ({ name: `${item.name} • ${item.price} coins`, value: item.id }))),
+    ),
+
   new SlashCommandBuilder()
     .setName('titulo')
     .setDescription('Equipa um título comprado.')
-    .addStringOption((option) => option.setName('equipar').setDescription('Título exato ou "Sem título".').setRequired(true).setMaxLength(80)),
-  new SlashCommandBuilder().setName('missoes').setDescription('Mostra suas missões diárias.'),
+    .addStringOption((option) =>
+      option
+        .setName('equipar')
+        .setDescription('Escolha um título.')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Sem título', value: 'Sem título' },
+          ...SHOP_ITEMS.filter((item) => item.type === 'title').map((item) => ({ name: item.name, value: item.value })),
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName('missoes')
+    .setDescription('Mostra suas missões diárias.'),
+
   new SlashCommandBuilder()
     .setName('missao')
     .setDescription('Coleta a recompensa de uma missão concluída.')
-    .addStringOption((option) => option.setName('coletar').setDescription('ID: chat_5, daily ou rep.').setRequired(true).setMaxLength(30)),
+    .addStringOption((option) =>
+      option
+        .setName('coletar')
+        .setDescription('Escolha a missão.')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Conversa Ativa', value: 'chat_5' },
+          { name: 'Ritual Diário', value: 'daily' },
+          { name: 'Fortaleça a Base', value: 'rep' },
+        ),
+    ),
+
   new SlashCommandBuilder()
     .setName('conquistas')
     .setDescription('Mostra conquistas e badges.')
     .addUserOption((option) => option.setName('membro').setDescription('Membro opcional.')),
+
   new SlashCommandBuilder()
     .setName('sugerir')
     .setDescription('Envia uma sugestão para votação da comunidade.')
-    .addStringOption((option) => option.setName('texto').setDescription('Sua sugestão.').setRequired(true).setMinLength(5).setMaxLength(1500)),
+    .addStringOption((option) =>
+      option
+        .setName('texto')
+        .setDescription('Sua sugestão.')
+        .setRequired(true)
+        .setMinLength(5)
+        .setMaxLength(1500),
+    ),
 ];
 
 export async function handleV3Command(interaction) {
@@ -322,17 +385,18 @@ export async function handleV3Command(interaction) {
   }
 
   if (interaction.commandName === 'comprar') {
-    const itemId = interaction.options.getString('item', true).trim();
+    const itemId = interaction.options.getString('item', true);
     const result = await buyShopItem(interaction.guild, interaction.user.id, itemId);
     if (!result.ok) {
       const text = result.reason === 'owned'
         ? 'Você já possui esse item.'
         : result.reason === 'funds'
           ? `Saldo insuficiente. Você tem 🍜 **${result.profile.coins}**.`
-          : 'Item não encontrado. Veja os IDs em `/loja`.';
+          : 'Item não encontrado.';
       await interaction.reply({ content: text, flags: MessageFlags.Ephemeral });
       return true;
     }
+
     await interaction.reply({ embeds: [characterEmbed({
       title: '🛒 Compra concluída',
       description: `Você comprou **${result.item.name}** por 🍜 **${result.item.price}**.\nSaldo: **${result.profile.coins} MiojoCoins**.`,
@@ -342,13 +406,17 @@ export async function handleV3Command(interaction) {
   }
 
   if (interaction.commandName === 'titulo') {
-    const title = interaction.options.getString('equipar', true).trim();
+    const title = interaction.options.getString('equipar', true);
     const result = await equipTitle(interaction.guild, interaction.user.id, title);
     if (!result.ok) {
       await interaction.reply({ content: 'Você ainda não possui esse título. Veja `/loja`.', flags: MessageFlags.Ephemeral });
       return true;
     }
-    await interaction.reply({ content: `✅ Título equipado: **${result.profile.title}**`, flags: MessageFlags.Ephemeral });
+
+    await interaction.reply({
+      content: `✅ Título equipado: **${result.profile.title}**`,
+      flags: MessageFlags.Ephemeral,
+    });
     return true;
   }
 
@@ -359,13 +427,18 @@ export async function handleV3Command(interaction) {
   }
 
   if (interaction.commandName === 'missao') {
-    const id = interaction.options.getString('coletar', true).trim();
+    const id = interaction.options.getString('coletar', true);
     const result = await claimMission(interaction.guild, interaction.user.id, id);
     if (!result.ok) {
-      const text = result.reason === 'claimed' ? 'Essa missão já foi coletada hoje.' : result.reason === 'incomplete' ? 'Essa missão ainda não foi concluída.' : 'Missão inválida. Use `chat_5`, `daily` ou `rep`.';
+      const text = result.reason === 'claimed'
+        ? 'Essa missão já foi coletada hoje.'
+        : result.reason === 'incomplete'
+          ? 'Essa missão ainda não foi concluída.'
+          : 'Missão inválida.';
       await interaction.reply({ content: text, flags: MessageFlags.Ephemeral });
       return true;
     }
+
     await interaction.reply({ embeds: [characterEmbed({
       title: '🎁 Missão coletada',
       description: `**${result.mission.name}** concluída.\n🍜 +**${result.mission.reward} MiojoCoins**`,
@@ -385,19 +458,27 @@ export async function handleV3Command(interaction) {
     const text = interaction.options.getString('texto', true);
     const result = await postSuggestion(interaction, text);
     if (!result.ok) {
-      await interaction.reply({ content: 'Canal `💡・sugestões` não encontrado. Execute `/repair`.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({
+        content: 'Canal `💡・sugestões` não encontrado. Execute `/repair`.',
+        flags: MessageFlags.Ephemeral,
+      });
       return true;
     }
-    await interaction.reply({ content: `✅ Sugestão publicada em <#${result.channel.id}>.`, flags: MessageFlags.Ephemeral });
+
+    await interaction.reply({
+      content: `✅ Sugestão publicada em <#${result.channel.id}>.`,
+      flags: MessageFlags.Ephemeral,
+    });
     return true;
   }
 
   return false;
 }
 
-export function achievementAnnouncement(client, userId, achievements) {
+export function achievementAnnouncement(_client, userId, achievements) {
   if (!achievements.length) return null;
   const names = achievements.map((item) => `${item.emoji} **${item.name}**`).join('\n');
+
   return characterEmbed({
     title: '🏅 Conquista desbloqueada',
     description: `${characterLine('achievement')}\n\n<@${userId}> desbloqueou:\n${names}\n\n🍜 **+75 MiojoCoins por conquista**`,
