@@ -1,6 +1,8 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
+const DEFAULT_CHARACTER_ASSET = 'https://raw.githubusercontent.com/mauricio-gamedev/dc-bot/main/assets/mio-character.webp';
+
 export const CHARACTER = {
   name: 'Mio',
   title: 'Guardião da MiojoPlays',
@@ -29,7 +31,7 @@ function validHttpUrl(value) {
 }
 
 export function characterAssets() {
-  const avatar = validHttpUrl(process.env.MIO_CHARACTER_IMAGE_URL);
+  const avatar = validHttpUrl(process.env.MIO_CHARACTER_IMAGE_URL) ?? DEFAULT_CHARACTER_ASSET;
   const banner = validHttpUrl(process.env.MIO_CHARACTER_BANNER_URL);
   const profile = validHttpUrl(process.env.MIO_CHARACTER_PROFILE_URL) ?? banner;
   return { avatar, banner, profile };
@@ -124,8 +126,8 @@ export function mascotReply(text, username) {
 export function characterVisualStatus() {
   const assets = characterAssets();
   return {
-    ready: Boolean(assets.avatar || assets.profile || assets.banner),
+    ready: Boolean(assets.avatar),
     assets,
-    fallback: `${BRAND.name} usa apenas identidade textual até um asset oficial ser configurado.`,
+    fallback: `${BRAND.name} usa o asset oficial empacotado no repositório.`,
   };
 }
