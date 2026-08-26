@@ -104,6 +104,11 @@ let connectedAt = null;
 let lastMessageAt = null;
 let interactionsOpen = false;
 let lastGlobalActionAt = 0;
+let lastUpgradeAt = null;
+let lastUpgradeProtocolOffer = null;
+let lastCloseCode = null;
+let lastCloseReason = null;
+let lastBridgeError = null;
 const userCooldowns = new Map();
 
 function safeTokenMatch(candidate) {
@@ -141,6 +146,7 @@ function commandPacket(commandLine) {
       version: 1,
       commandLine,
       origin: { type: 'player' },
+      overworld: 'default',
     },
   };
 }
@@ -169,25 +175,48 @@ export function minecraftBridgeStatus() {
     lastMessageAt,
     publicUrl: bridgePublicUrl,
     persistentToken: Boolean(persistentToken),
+    lastUpgradeAt,
+    lastUpgradeProtocolOffer,
+    lastCloseCode,
+    lastCloseReason,
+    lastBridgeError,
   };
 }
 
 export function attachMinecraftBridge(httpServer) {
   if (websocketServer) return websocketServer;
 
-  websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
+  // Bedrock may offer com.microsoft.minecraft.wsencrypt even when encrypted
+  // websockets are not required. The default `ws` behaviour echoes the first
+  // offered subprotocol, which would falsely negotiate Minecraft application-
+  // layer encryption. Explicitly decline subprotocol negotiation here.
+  websocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_PAYLOAD,
+    handleProtocols: () => false,
+  });
 
   httpServer.on('upgrade', (request, socket, head) => {
+    lastUpgradeAt = new Date().toISOString();
+    lastUpgradeProtocolOffer = request.headers['sec-websocket-protocol'] || null;
+    lastBridgeError = null;
+
     const token = connectionPathToken(request.url);
     if (!token || !safeTokenMatch(token)) {
+      lastBridgeError = 'unauthorized_path_or_token';
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
 
-    websocketServer.handleUpgrade(request, socket, head, (client) => {
-      websocketServer.emit('connection', client, request);
-    });
+    try {
+      websocketServer.handleUpgrade(request, socket, head, (client) => {
+        websocketServer.emit('connection', client, request);
+      });
+    } catch (error) {
+      lastBridgeError = `upgrade_failed:${error.message}`.slice(0, 180);
+      socket.destroy();
+    }
   });
 
   websocketServer.on('connection', (client) => {
@@ -198,6 +227,9 @@ export function attachMinecraftBridge(httpServer) {
     activeClient = client;
     connectedAt = new Date().toISOString();
     lastMessageAt = null;
+    lastCloseCode = null;
+    lastCloseReason = null;
+    lastBridgeError = null;
     interactionsOpen = false;
     userCooldowns.clear();
     lastGlobalActionAt = 0;
@@ -207,7 +239,12 @@ export function attachMinecraftBridge(httpServer) {
       if (data.length > MAX_PAYLOAD) client.close(1009, 'Payload muito grande');
     });
 
-    client.on('close', () => {
+    client.on('close', (code, reason) => {
+      lastCloseCode = Number(code) || 0;
+      lastCloseReason = Buffer.isBuffer(reason)
+        ? reason.toString('utf8').slice(0, 160)
+        : String(reason || '').slice(0, 160);
+
       if (activeClient === client) {
         activeClient = null;
         interactionsOpen = false;
@@ -216,14 +253,18 @@ export function attachMinecraftBridge(httpServer) {
     });
 
     client.on('error', (error) => {
+      lastBridgeError = String(error?.message || error).slice(0, 180);
       console.error('Erro na conexão Minecraft WebSocket:', error.message);
     });
 
-    setTimeout(() => {
-      if (activeClient === client && isClientOpen()) {
-        sendMinecraftCommand('tellraw @p {"rawtext":[{"text":"§d[MiojoPlays] §fGame Interactive conectado ao Discord."}]}');
-      }
-    }, 500).unref?.();
+    // Não envia pacote automaticamente no handshake. Alguns clientes Bedrock
+    // encerram a sessão se o servidor envia comando antes da inicialização do
+    // protocolo estar concluída. O primeiro comando só sai via /game acao.
+  });
+
+  websocketServer.on('error', (error) => {
+    lastBridgeError = String(error?.message || error).slice(0, 180);
+    console.error('Erro no servidor Minecraft WebSocket:', error.message);
   });
 
   return websocketServer;
@@ -249,16 +290,29 @@ export function stopMinecraftBridge() {
   }
 }
 
+function diagnosticLine(status) {
+  if (status.connected) return null;
+  if (status.lastBridgeError) return `🧪 **Diagnóstico:** ${status.lastBridgeError}`;
+  if (status.lastCloseCode !== null) {
+    const reason = status.lastCloseReason ? ` • ${status.lastCloseReason}` : '';
+    return `🧪 **Último fechamento:** código ${status.lastCloseCode}${reason}`;
+  }
+  if (status.lastUpgradeAt) return '🧪 **Diagnóstico:** handshake recebido; aguardando nova tentativa.';
+  return null;
+}
+
 function statusDescription(status) {
+  const diagnostic = diagnosticLine(status);
   return [
     `🎮 **Minecraft:** ${status.connected ? '🟢 conectado' : '🔴 desconectado'}`,
     `🎛️ **Interações:** ${status.interactionsOpen ? '🟢 abertas' : '🔒 fechadas'}`,
     `🔐 **Ponte:** ${status.attached ? 'ativa' : 'inativa'}`,
+    diagnostic,
     '',
     status.connected
       ? 'O mundo está conectado. O dono pode usar `/game abrir` para liberar as ações da comunidade.'
       : 'O dono precisa usar `/game conectar` e executar o comando mostrado dentro do Minecraft.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export async function handleMinecraftCommand(interaction) {
@@ -294,7 +348,7 @@ export async function handleMinecraftCommand(interaction) {
         '🎮 **No Minecraft Bedrock, dentro do seu mundo com cheats ativados, execute:**',
         `\`${connectCommand()}\``,
         '',
-        'Essa resposta é privada. Não compartilhe o comando, porque ele contém a chave da ponte.',
+        'Deixe **Exigir WebSockets criptografados** desativado. Essa resposta é privada; não compartilhe o comando porque ele contém a chave da ponte.',
       ].join('\n'),
       flags: MessageFlags.Ephemeral,
     });
@@ -371,10 +425,7 @@ export async function handleMinecraftCommand(interaction) {
     const actionId = interaction.options.getString('tipo', true);
     const action = ACTIONS[actionId];
     if (!action) {
-      await interaction.reply({
-        content: 'Ação inválida.',
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.reply({ content: 'Ação inválida.', flags: MessageFlags.Ephemeral });
       return true;
     }
 
