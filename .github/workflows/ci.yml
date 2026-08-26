@@ -23,3 +23,12 @@ jobs:
 
       - name: Syntax check
         run: npm run check
+
+      - name: Use Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Build Android Bedrock relay
+        working-directory: tools/bedrock-relay
+        run: go build ./...
