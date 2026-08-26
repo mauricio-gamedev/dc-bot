@@ -134,6 +134,7 @@ export async function buildProfileEmbed(guild, user) {
       `🏆 **Ranking XP:** ${rank > 0 ? `#${rank}` : 'sem posição'}`,
       `🔥 **Sequência diária:** ${profile.dailyStreak} dia(s)`,
       `🔴 **Presenças em lives:** ${profile.liveAttendanceCount || 0}`,
+      `🎟️ **Eventos oficiais:** ${profile.eventParticipationCount || 0}`,
       `🏅 **Conquistas:** ${badgeCount}`,
       '',
       'Use `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
