@@ -14,8 +14,9 @@ import {
   VIP_ROLE_NAMES,
 } from './blueprint.js';
 import { ensureTicketPanel } from './tickets.js';
+import { ensureAutoMod, inspectAutoMod } from './automod.js';
 
-const SETUP_MARKER = 'miojoplays:managed:v1';
+const SETUP_MARKER = 'miojoplays:managed:v2';
 
 function byExactName(collection, name) {
   return collection.find((item) => item.name === name);
@@ -71,6 +72,29 @@ function staffOverwriteSet(guild, roleMap) {
         PermissionFlagsBits.Connect,
         PermissionFlagsBits.Speak,
       ],
+    });
+  }
+
+  return overwrites;
+}
+
+function systemOnlyOverwriteSet(guild, roleMap) {
+  const overwrites = [
+    {
+      id: guild.roles.everyone.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+  ];
+
+  const adminRole = roleMap.get('👑・Administração');
+  if (adminRole) {
+    overwrites.push({
+      id: adminRole.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+      deny: [PermissionFlagsBits.SendMessages],
     });
   }
 
@@ -186,9 +210,11 @@ async function ensureChannel(guild, category, spec, roleMap, report, categorySpe
       ? vipOverwriteSet(guild, roleMap)
       : undefined;
 
-  const permissionOverwrites = spec.readOnly
-    ? combineOverwrites(inheritedScope, readOnlyOverwrites(guild, roleMap))
-    : inheritedScope;
+  const permissionOverwrites = spec.systemOnly
+    ? systemOnlyOverwriteSet(guild, roleMap)
+    : spec.readOnly
+      ? combineOverwrites(inheritedScope, readOnlyOverwrites(guild, roleMap))
+      : inheritedScope;
 
   if (!channel) {
     channel = await guild.channels.create({
@@ -307,6 +333,24 @@ async function seedMessages(channels, report) {
       ),
     },
     {
+      name: '🏆・ranking',
+      marker: 'ranking',
+      embed: managedEmbed(
+        '🏆 Sistema de comunidade',
+        [
+          '🐈‍⬛ O mascote da MiojoPlays agora acompanha a evolução da comunidade.',
+          '',
+          '✨ Ganhe XP participando sem spam.',
+          '🍜 Colete **MiojoCoins** com `/daily` e bônus de nível.',
+          '💜 Dê reputação com `/rep`.',
+          '📊 Veja seu cartão com `/perfil`.',
+          '🏆 Compare posições usando `/ranking`.',
+          '',
+          'Os dados ficam persistidos dentro do próprio servidor, sem depender do armazenamento temporário da hospedagem.',
+        ].join('\n'),
+      ),
+    },
+    {
       name: '💙・apoie-a-live',
       marker: 'support-live',
       embed: managedEmbed(
@@ -372,6 +416,8 @@ export async function buildGuild(guild, { repairOnly = false } = {}) {
     channelsCreated: [],
     channelsUpdated: [],
     messagesSeeded: [],
+    automodCreated: [],
+    automodUpdated: [],
     guildTuned: false,
     warnings: [],
   };
@@ -406,6 +452,7 @@ export async function buildGuild(guild, { repairOnly = false } = {}) {
   await tuneGuild(guild, channels, report);
   await seedMessages(channels, report);
   await ensureTicketPanel(guild, channels.get('🎫・abrir-ticket'), roleMap, report);
+  await ensureAutoMod(guild, channels.get('📋・mod-logs'), report);
 
   return report;
 }
@@ -413,18 +460,20 @@ export async function buildGuild(guild, { repairOnly = false } = {}) {
 export function formatSetupReport(report) {
   const created = report.rolesCreated.length + report.categoriesCreated.length + report.channelsCreated.length;
   const repaired = report.rolesUpdated.length + report.categoriesUpdated.length + report.channelsUpdated.length;
+  const automod = report.automodCreated.length + report.automodUpdated.length;
 
   return [
-    `✅ Estrutura processada com sucesso.`,
+    '✅ Estrutura processada com sucesso.',
     `🆕 Criados: **${created}** itens`,
     `🛠️ Verificados/ajustados: **${repaired}** itens`,
     `📝 Mensagens iniciais novas: **${report.messagesSeeded.length}**`,
+    `🛡️ Regras AutoMod processadas: **${automod}**`,
     `⚙️ Configurações globais: **${report.guildTuned ? 'aplicadas' : 'parciais'}**`,
     report.warnings.length ? `⚠️ Avisos: ${report.warnings.join(' | ')}` : '🟢 Nenhum aviso crítico.',
   ].join('\n');
 }
 
-export function inspectGuild(guild) {
+export async function inspectGuild(guild) {
   const missingRoles = ROLE_BLUEPRINT
     .filter((spec) => !byExactName(guild.roles.cache, spec.name))
     .map((spec) => spec.name);
@@ -438,10 +487,17 @@ export function inspectGuild(guild) {
     .filter((spec) => !guild.channels.cache.some((channel) => channel.name === spec.name && channel.type === spec.type))
     .map((spec) => spec.name);
 
+  const missingAutoMod = await inspectAutoMod(guild);
+
   return {
-    healthy: missingRoles.length === 0 && missingCategories.length === 0 && missingChannels.length === 0,
+    healthy:
+      missingRoles.length === 0 &&
+      missingCategories.length === 0 &&
+      missingChannels.length === 0 &&
+      missingAutoMod.length === 0,
     missingRoles,
     missingCategories,
     missingChannels,
+    missingAutoMod,
   };
 }

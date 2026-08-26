@@ -8,6 +8,9 @@ import {
 } from 'discord.js';
 import { commandData, handleCommand, handleSetupButton } from './commands.js';
 import { handleTicketInteraction } from './core/tickets.js';
+import { attachLogging } from './core/logging.js';
+import { handleMessageProgress } from './core/progression.js';
+import { flushAllProfiles } from './core/communityStore.js';
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
@@ -20,10 +23,15 @@ if (!token) {
   process.exit(1);
 }
 
-const intents = [GatewayIntentBits.Guilds];
+const intents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildModeration,
+];
 if (enableMemberEvents) intents.push(GatewayIntentBits.GuildMembers);
 
 const client = new Client({ intents });
+attachLogging(client);
 
 const healthServer = http.createServer((req, res) => {
   const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
@@ -38,6 +46,7 @@ const healthServer = http.createServer((req, res) => {
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
+    version: '0.2.0',
     discord: ready ? 'online' : 'connecting',
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
@@ -70,7 +79,7 @@ async function registerCommands() {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Online como ${readyClient.user.tag}.`);
-  readyClient.user.setActivity('a MiojoPlays Community', { type: ActivityType.Watching });
+  readyClient.user.setActivity('a comunidade evoluir 🐈‍⬛', { type: ActivityType.Watching });
 
   try {
     await registerCommands();
@@ -100,6 +109,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await handleMessageProgress(message);
+  } catch (error) {
+    console.error('Falha no sistema de progressão:', error);
+  }
+});
+
 if (enableMemberEvents) {
   client.on(Events.GuildMemberAdd, async (member) => {
     try {
@@ -122,8 +139,16 @@ if (enableMemberEvents) {
   });
 }
 
+let shuttingDown = false;
 async function shutdown(signal) {
-  console.log(`${signal} recebido. Encerrando com segurança...`);
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} recebido. Persistindo dados e encerrando com segurança...`);
+
+  await flushAllProfiles(client).catch((error) => {
+    console.error('Falha ao persistir perfis no shutdown:', error);
+  });
+
   healthServer.close();
   client.destroy();
   process.exit(0);
