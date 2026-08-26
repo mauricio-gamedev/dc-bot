@@ -1,14 +1,14 @@
 {
   "name": "miojoplays-community-bot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Professional Discord community, moderation, progression, character and live integration bot for MiojoPlays.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "check:syntax": "node --check src/index.js && node --check src/commands.js && node --check src/core/blueprint.js && node --check src/core/guildBuilder.js && node --check src/core/tickets.js && node --check src/core/communityStore.js && node --check src/core/progression.js && node --check src/core/logging.js && node --check src/core/automod.js && node --check src/core/character.js && node --check src/core/communityV3.js && node --check src/core/kickLive.js && node --check src/core/ownerCoins.js && node --check src/core/eventAgenda.js",
-    "check:imports": "node -e \"Promise.all([import('./src/commands.js'), import('./src/core/progression.js'), import('./src/core/communityV3.js'), import('./src/core/character.js'), import('./src/core/kickLive.js'), import('./src/core/ownerCoins.js'), import('./src/core/eventAgenda.js')]).then(() => console.log('module graph ok'))\"",
+    "check:syntax": "node --check src/index.js && node --check src/commands.js && node --check src/core/blueprint.js && node --check src/core/guildBuilder.js && node --check src/core/tickets.js && node --check src/core/communityStore.js && node --check src/core/progression.js && node --check src/core/logging.js && node --check src/core/automod.js && node --check src/core/character.js && node --check src/core/communityV3.js && node --check src/core/kickLive.js && node --check src/core/ownerCoins.js && node --check src/core/eventAgenda.js && node --check src/core/personalSeals.js",
+    "check:imports": "node -e \"Promise.all([import('./src/commands.js'), import('./src/core/progression.js'), import('./src/core/communityV3.js'), import('./src/core/character.js'), import('./src/core/kickLive.js'), import('./src/core/ownerCoins.js'), import('./src/core/eventAgenda.js'), import('./src/core/personalSeals.js')]).then(() => console.log('module graph ok'))\"",
     "check": "npm run check:syntax && npm run check:imports"
   },
   "engines": {
