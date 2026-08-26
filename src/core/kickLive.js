@@ -10,6 +10,14 @@ let appTokenExpiresAt = 0;
 let pollTimer = null;
 let polling = false;
 let lastState = null;
+let lastCheckedAt = null;
+let lastError = null;
+
+function parsePollInterval(value) {
+  const parsed = Number(value || DEFAULT_INTERVAL_MS);
+  if (!Number.isFinite(parsed)) return DEFAULT_INTERVAL_MS;
+  return Math.max(60_000, Math.floor(parsed));
+}
 
 function config() {
   return {
@@ -18,7 +26,7 @@ function config() {
     slug: process.env.KICK_CHANNEL_SLUG?.trim() || 'MiojoPlays',
     broadcasterUserId: process.env.KICK_BROADCASTER_USER_ID?.trim(),
     enabled: String(process.env.KICK_LIVE_ENABLED ?? 'false').toLowerCase() === 'true',
-    intervalMs: Math.max(60_000, Number(process.env.KICK_LIVE_POLL_MS || DEFAULT_INTERVAL_MS)),
+    intervalMs: parsePollInterval(process.env.KICK_LIVE_POLL_MS),
   };
 }
 
@@ -29,8 +37,15 @@ export function kickLiveStatus() {
     configured: Boolean(current.clientId && current.clientSecret && current.slug),
     slug: current.slug,
     polling: Boolean(pollTimer),
+    lastCheckedAt,
+    lastError,
     lastState,
   };
+}
+
+function clearAppToken() {
+  appToken = null;
+  appTokenExpiresAt = 0;
 }
 
 async function getAppToken() {
@@ -67,41 +82,61 @@ async function getAppToken() {
   return appToken;
 }
 
+async function fetchKickJson(path) {
+  let token = await getAppToken();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch(`${KICK_API}${path}`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(12_000),
+    });
+
+    if (response.status === 401 && attempt === 0) {
+      clearAppToken();
+      token = await getAppToken();
+      continue;
+    }
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      const suffix = detail ? ` • ${detail.slice(0, 180)}` : '';
+      throw new Error(`Kick API respondeu HTTP ${response.status}${suffix}`);
+    }
+
+    return response.json();
+  }
+
+  throw new Error('Kick API recusou o App Access Token após renovação.');
+}
+
 async function fetchChannelState() {
   const current = config();
-  const token = await getAppToken();
   const params = new URLSearchParams();
   if (current.broadcasterUserId) params.append('broadcaster_user_id', current.broadcasterUserId);
   else params.append('slug', current.slug);
 
-  const response = await fetch(`${KICK_API}/public/v1/channels?${params.toString()}`, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(12_000),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    const suffix = detail ? ` • ${detail.slice(0, 180)}` : '';
-    throw new Error(`Kick channels respondeu HTTP ${response.status}${suffix}`);
+  const json = await fetchKickJson(`/public/v1/channels?${params.toString()}`);
+  const channel = Array.isArray(json?.data) ? json.data[0] : json?.data;
+  if (!channel) {
+    return {
+      isLive: false,
+      slug: current.slug,
+      broadcasterUserId: current.broadcasterUserId ?? null,
+    };
   }
 
-  const json = await response.json();
-  const channel = Array.isArray(json?.data) ? json.data[0] : json?.data;
-  if (!channel) return { isLive: false, slug: current.slug, raw: null };
-
   const stream = channel.stream ?? null;
-  const isLive = Boolean(stream?.is_live ?? stream?.isLive ?? false);
+  const isLive = Boolean(stream?.is_live);
 
   return {
     isLive,
     slug: channel.slug || current.slug,
     broadcasterUserId: channel.broadcaster_user_id ?? current.broadcasterUserId ?? null,
-    title: stream?.title || channel.stream_title || 'MiojoPlays está ao vivo!',
-    category: stream?.category?.name || channel.category?.name || channel.category?.slug || 'Live',
+    title: channel.stream_title || 'MiojoPlays está ao vivo!',
+    category: channel.category?.name || 'Live',
     viewerCount: Number(stream?.viewer_count || 0),
-    thumbnail: stream?.thumbnail || channel.thumbnail || null,
-    startedAt: stream?.start_time || stream?.started_at || null,
-    raw: channel,
+    thumbnail: stream?.thumbnail || null,
+    startedAt: stream?.start_time || null,
   };
 }
 
@@ -113,6 +148,10 @@ function liveChannel(guild) {
 
 function liveRole(guild) {
   return guild.roles.cache.find((role) => role.name === '🔴・Lives');
+}
+
+function liveUrl(state) {
+  return `https://kick.com/${encodeURIComponent(state.slug)}`;
 }
 
 function sameLiveSession(embed, state, url) {
@@ -129,7 +168,7 @@ function sameLiveSession(embed, state, url) {
 }
 
 async function alreadyAnnounced(channel, state, url) {
-  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
   if (!recent) return false;
   return recent.some((message) =>
     message.author.id === channel.guild.members.me?.id &&
@@ -138,7 +177,10 @@ async function alreadyAnnounced(channel, state, url) {
 }
 
 function setLivePresence(client, state) {
-  client.user?.setActivity(`🔴 AO VIVO • ${state.title}`.slice(0, 120), { type: ActivityType.Watching });
+  client.user?.setActivity(`AO VIVO • ${state.title}`.slice(0, 120), {
+    type: ActivityType.Streaming,
+    url: liveUrl(state),
+  });
 }
 
 async function announceLive(client, guild, state) {
@@ -146,7 +188,7 @@ async function announceLive(client, guild, state) {
   if (!channel) return false;
 
   const role = liveRole(guild);
-  const url = `https://kick.com/${encodeURIComponent(state.slug)}`;
+  const url = liveUrl(state);
 
   // Impede anúncio duplicado mesmo se o Render reiniciar durante a mesma transmissão.
   if (await alreadyAnnounced(channel, state, url)) {
@@ -222,9 +264,12 @@ async function poll(client) {
     }
 
     lastState = state;
+    lastError = null;
   } catch (error) {
+    lastError = error.message;
     console.error('Kick Live Watch:', error.message);
   } finally {
+    lastCheckedAt = new Date().toISOString();
     polling = false;
   }
 }
@@ -252,4 +297,5 @@ export function stopKickLiveWatcher() {
   if (!pollTimer) return;
   clearInterval(pollTimer);
   pollTimer = null;
+  clearAppToken();
 }
