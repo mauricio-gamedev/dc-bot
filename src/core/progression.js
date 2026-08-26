@@ -1,5 +1,6 @@
 import { getAllProfiles, getProfile, mutateProfile } from './communityStore.js';
 import { characterEmbed, characterLine, CHARACTER, mascotReply as mioReply } from './character.js';
+import { resolveProfileSeal } from './personalSeals.js';
 import {
   achievementAnnouncement,
   recordMissionDaily,
@@ -117,12 +118,15 @@ export async function buildProfileEmbed(guild, user) {
   const badgeCount = profile.achievements.length;
   const member = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
   const supporter = supporterLabel(member);
+  const sealState = await resolveProfileSeal(guild, user.id);
+  const equippedSeal = sealState.equipped;
 
   return characterEmbed({
     title: `🐈‍⬛ Perfil de ${user.username}`,
     description: [
       `> **Título:** ${profile.title || 'Sem título'}`,
       `> **Supporter:** ${supporter}`,
+      `> **Selo:** ${equippedSeal?.label ?? 'Nenhum equipado'}`,
       '',
       `✨ **Nível:** ${level}`,
       `**XP total:** ${profile.xp.toLocaleString('pt-BR')}`,
@@ -137,8 +141,10 @@ export async function buildProfileEmbed(guild, user) {
       `🎟️ **Eventos oficiais:** ${profile.eventParticipationCount || 0}`,
       `🏅 **Conquistas:** ${badgeCount}`,
       '',
-      'Use `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
+      'Use `/selos`, `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
     ].join('\n'),
+    presentation: equippedSeal ? 'badge' : 'compact',
+    seal: equippedSeal ? 'animated' : 'static',
   }).setAuthor({
     name: 'MiojoPlays • Character Profile',
     iconURL: user.displayAvatarURL({ size: 128 }),
