@@ -28,7 +28,7 @@ export MIOJO_RELAY_TOKEN='COLE_A_CHAVE_AQUI'
 go run .
 ```
 
-Quando aparecer `MiojoPlays Bedrock Relay ativo`, abra o Minecraft, entre em um mundo com cheats habilitados e execute:
+Quando aparecer `MiojoPlays Bedrock Relay ativo`, mantenha o processo em execução, abra o Minecraft, entre em um mundo com cheats habilitados e execute:
 
 ```text
 /connect ws://127.0.0.1:19131/ws
@@ -38,7 +38,7 @@ Depois confira `/game status` no Discord. O modo deve aparecer como `relay Andro
 
 ## Uso
 
-1. Mantenha o Termux/relay ativo.
+1. Mantenha o Termux/relay ativo em segundo plano enquanto joga.
 2. No Discord, o dono usa `/game abrir`.
 3. A comunidade usa `/game acao`.
 4. O dono pode usar `/game fechar` a qualquer momento.
