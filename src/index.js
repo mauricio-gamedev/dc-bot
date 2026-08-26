@@ -5,12 +5,15 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
 } from 'discord.js';
 import { commandData, handleCommand, handleSetupButton } from './commands.js';
 import { handleTicketInteraction } from './core/tickets.js';
 import { attachLogging } from './core/logging.js';
 import { handleMessageProgress } from './core/progression.js';
 import { flushAllProfiles } from './core/communityStore.js';
+import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
+import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
@@ -46,7 +49,8 @@ const healthServer = http.createServer((req, res) => {
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
-    version: '0.2.0',
+    version: '0.3.0',
+    character: CHARACTER.name,
     discord: ready ? 'online' : 'connecting',
     uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     timestamp: new Date().toISOString(),
@@ -77,19 +81,33 @@ async function registerCommands() {
   console.log('Slash commands registrados globalmente. A propagação global pode levar alguns minutos.');
 }
 
+async function ensurePanels() {
+  for (const guild of client.guilds.cache.values()) {
+    await guild.channels.fetch().catch(() => {});
+    const rolesChannel = guild.channels.cache.find(
+      (channel) => channel.name === '🎭・cargos' && channel.isTextBased(),
+    );
+    await ensureSelfRolePanel(guild, rolesChannel).catch((error) => {
+      console.error(`Falha ao garantir painel de cargos em ${guild.name}:`, error);
+    });
+  }
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Online como ${readyClient.user.tag}.`);
-  readyClient.user.setActivity('a comunidade evoluir 🐈‍⬛', { type: ActivityType.Watching });
+  readyClient.user.setActivity(`${CHARACTER.name} protege a comunidade 🐈‍⬛`, { type: ActivityType.Watching });
 
   try {
     await registerCommands();
+    await ensurePanels();
   } catch (error) {
-    console.error('Falha ao registrar slash commands:', error);
+    console.error('Falha no bootstrap do bot:', error);
   }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
     if (await handleSetupButton(interaction)) return;
     if (await handleCommand(interaction)) return;
@@ -98,7 +116,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const payload = {
       content: `❌ Ocorreu um erro ao executar esta ação: ${error.message}`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     };
 
     if (interaction.deferred || interaction.replied) {
@@ -129,7 +147,12 @@ if (enableMemberEvents) {
 
       if (welcome) {
         await welcome.send({
-          content: `👋 Bem-vindo(a), <@${member.id}>! Dá uma olhada nas regras e aproveita a comunidade. 💜`,
+          content: `<@${member.id}>`,
+          embeds: [characterEmbed({
+            title: `🐈‍⬛ ${CHARACTER.name} recebeu um novo membro`,
+            description: `${characterLine('welcome', member.user.username)}\n\n📜 Leia as regras, escolha seus cargos e aproveita a comunidade.`,
+            color: CHARACTER.palette.success,
+          })],
           allowedMentions: { users: [member.id] },
         });
       }
