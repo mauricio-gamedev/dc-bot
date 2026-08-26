@@ -8,6 +8,14 @@ import {
 } from 'discord.js';
 import { BRAND } from './core/blueprint.js';
 import { buildGuild, formatSetupReport, inspectGuild } from './core/guildBuilder.js';
+import {
+  buildLeaderboardEmbed,
+  buildProfileEmbed,
+  claimDaily,
+  giveReputation,
+  mascotReply,
+} from './core/progression.js';
+import { logModerationAction } from './core/logging.js';
 
 export const commandBuilders = [
   new SlashCommandBuilder()
@@ -24,6 +32,45 @@ export const commandBuilders = [
     .setName('status')
     .setDescription('Mostra a integridade da estrutura gerenciada pelo bot.')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
+    .setName('perfil')
+    .setDescription('Mostra nível, XP, MiojoCoins, reputação e posição no ranking.')
+    .addUserOption((option) =>
+      option.setName('membro').setDescription('Perfil de outro membro (opcional).'),
+    ),
+
+  new SlashCommandBuilder()
+    .setName('daily')
+    .setDescription('Coleta sua recompensa diária de MiojoCoins.'),
+
+  new SlashCommandBuilder()
+    .setName('rep')
+    .setDescription('Dá um ponto de reputação para outro membro.')
+    .addUserOption((option) =>
+      option.setName('membro').setDescription('Membro que receberá reputação.').setRequired(true),
+    ),
+
+  new SlashCommandBuilder()
+    .setName('ranking')
+    .setDescription('Mostra os melhores membros da comunidade.')
+    .addStringOption((option) =>
+      option
+        .setName('tipo')
+        .setDescription('Escolha o ranking.')
+        .addChoices(
+          { name: 'XP', value: 'xp' },
+          { name: 'MiojoCoins', value: 'coins' },
+          { name: 'Reputação', value: 'rep' },
+        ),
+    ),
+
+  new SlashCommandBuilder()
+    .setName('mascote')
+    .setDescription('Conversa com o personagem da MiojoPlays.')
+    .addStringOption((option) =>
+      option.setName('mensagem').setDescription('Fala algo para o mascote.').setMaxLength(300),
+    ),
 
   new SlashCommandBuilder()
     .setName('limpar')
@@ -144,6 +191,12 @@ async function handleModeration(interaction) {
     await interaction.deferReply({ ephemeral: true });
     const deleted = await interaction.channel.bulkDelete(amount, true);
     await interaction.editReply(`🧹 Foram removidas **${deleted.size}** mensagens recentes.`);
+    await logModerationAction(
+      interaction,
+      'Limpeza de chat',
+      `<#${interaction.channel.id}>`,
+      `${deleted.size} mensagens removidas`,
+    );
     return true;
   }
 
@@ -159,6 +212,7 @@ async function handleModeration(interaction) {
 
     await member.timeout(minutes * 60_000, `${reason} | por ${interaction.user.tag}`);
     await interaction.reply({ content: `⏱️ ${member} recebeu timeout de **${minutes} min**. Motivo: ${reason}`, ephemeral: true });
+    await logModerationAction(interaction, `Timeout ${minutes}min`, `${member.user.tag} (${member.id})`, reason);
     return true;
   }
 
@@ -171,8 +225,10 @@ async function handleModeration(interaction) {
       return true;
     }
 
+    const target = `${member.user.tag} (${member.id})`;
     await member.kick(`${reason} | por ${interaction.user.tag}`);
     await interaction.reply({ content: `👢 **${member.user.tag}** foi expulso. Motivo: ${reason}`, ephemeral: true });
+    await logModerationAction(interaction, 'Kick', target, reason);
     return true;
   }
 
@@ -188,6 +244,85 @@ async function handleModeration(interaction) {
 
     await interaction.guild.members.ban(user.id, { reason: `${reason} | por ${interaction.user.tag}` });
     await interaction.reply({ content: `🔨 **${user.tag}** foi banido. Motivo: ${reason}`, ephemeral: true });
+    await logModerationAction(interaction, 'Ban', `${user.tag} (${user.id})`, reason);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleCommunityCommands(interaction) {
+  if (interaction.commandName === 'perfil') {
+    const user = interaction.options.getUser('membro') ?? interaction.user;
+    const embed = await buildProfileEmbed(interaction.guild, user, interaction.client);
+    await interaction.reply({ embeds: [embed] });
+    return true;
+  }
+
+  if (interaction.commandName === 'daily') {
+    const result = await claimDaily(interaction.guild, interaction.user.id);
+    if (!result.ok) {
+      await interaction.reply({
+        embeds: [resultEmbed(
+          '⏳ Daily ainda em cooldown',
+          `Volta em aproximadamente **${result.wait}** para coletar novamente.`,
+          BRAND.warning,
+        )],
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    await interaction.reply({
+      embeds: [resultEmbed(
+        '🍜 Daily coletado!',
+        `Você recebeu **${result.reward} MiojoCoins**.\n🔥 Sequência atual: **${result.streak} dia(s)**.`,
+        BRAND.success,
+      )],
+    });
+    return true;
+  }
+
+  if (interaction.commandName === 'rep') {
+    const target = interaction.options.getUser('membro', true);
+    if (target.bot) {
+      await interaction.reply({ content: 'Bots não entram no sistema de reputação.', ephemeral: true });
+      return true;
+    }
+
+    const result = await giveReputation(interaction.guild, interaction.user.id, target.id);
+    if (!result.ok && result.reason === 'self') {
+      await interaction.reply({ content: 'Você não pode dar reputação para si mesmo 😼.', ephemeral: true });
+      return true;
+    }
+    if (!result.ok) {
+      await interaction.reply({ content: `Você poderá dar reputação novamente em **${result.wait}**.`, ephemeral: true });
+      return true;
+    }
+
+    await interaction.reply({
+      content: `💜 <@${interaction.user.id}> deu **+1 reputação** para <@${target.id}>. Agora ele(a) tem **${result.reputation}**.`,
+      allowedMentions: { users: [interaction.user.id, target.id] },
+    });
+    return true;
+  }
+
+  if (interaction.commandName === 'ranking') {
+    const type = interaction.options.getString('tipo') ?? 'xp';
+    const embed = await buildLeaderboardEmbed(interaction.guild, interaction.client, type);
+    await interaction.reply({ embeds: [embed] });
+    return true;
+  }
+
+  if (interaction.commandName === 'mascote') {
+    const text = interaction.options.getString('mensagem') ?? '';
+    const embed = resultEmbed(
+      '🐈‍⬛ Mascote MiojoPlays',
+      mascotReply(text, interaction.user.username),
+    );
+    const avatar = interaction.client.user?.displayAvatarURL({ size: 256 });
+    if (avatar) embed.setThumbnail(avatar);
+    await interaction.reply({ embeds: [embed] });
     return true;
   }
 
@@ -203,14 +338,14 @@ export async function handleCommand(interaction) {
       [
         'O bot vai montar e padronizar a comunidade inteira:',
         '',
-        '• cargos e hierarquia;',
-        '• categorias e canais;',
-        '• permissões privadas de Staff/VIP;',
-        '• regras e mensagens iniciais;',
-        '• sistema de tickets;',
-        '• configurações básicas de segurança do servidor.',
+        '• cargos, categorias, canais e permissões;',
+        '• áreas privadas de Staff/VIP;',
+        '• regras, tickets e mensagens iniciais;',
+        '• logs e AutoMod nativo;',
+        '• sistema persistente de XP, níveis, MiojoCoins e reputação;',
+        '• área de ranking e armazenamento interno do bot.',
         '',
-        '**O processo é idempotente:** executar novamente não cria cópias dos canais e cargos gerenciados.',
+        '**O processo é idempotente:** executar novamente não cria cópias dos itens gerenciados.',
       ].join('\n'),
     );
 
@@ -232,16 +367,17 @@ export async function handleCommand(interaction) {
   if (interaction.commandName === 'status') {
     await interaction.guild.roles.fetch();
     await interaction.guild.channels.fetch();
-    const status = inspectGuild(interaction.guild);
+    const status = await inspectGuild(interaction.guild);
 
     const description = status.healthy
-      ? '🟢 A estrutura principal está íntegra. Nenhum cargo, categoria ou canal gerenciado está faltando.'
+      ? '🟢 Estrutura, canais e regras de segurança principais estão íntegros.'
       : [
           '🟠 Foram encontradas diferenças na estrutura.',
           '',
           status.missingRoles.length ? `**Cargos faltando:** ${status.missingRoles.join(', ')}` : null,
           status.missingCategories.length ? `**Categorias faltando:** ${status.missingCategories.join(', ')}` : null,
           status.missingChannels.length ? `**Canais faltando:** ${status.missingChannels.join(', ')}` : null,
+          status.missingAutoMod.length ? `**AutoMod faltando:** ${status.missingAutoMod.join(', ')}` : null,
           '',
           'Execute `/repair` para corrigir automaticamente.',
         ].filter(Boolean).join('\n');
@@ -274,6 +410,7 @@ export async function handleCommand(interaction) {
     return true;
   }
 
+  if (await handleCommunityCommands(interaction)) return true;
   if (await handleModeration(interaction)) return true;
   return false;
 }
