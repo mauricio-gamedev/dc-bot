@@ -10,7 +10,7 @@ Fluxo:
 
 `Minecraft Bedrock -> ws://127.0.0.1:19131/ws -> relay Android -> HTTPS -> bot Discord/Render`
 
-O endereço `127.0.0.1` é local ao próprio aparelho: o Minecraft não recebe a chave privada nem se conecta diretamente ao Render.
+O endereço `127.0.0.1` é local ao próprio aparelho: o Minecraft não recebe a chave privada nem se conecta diretamente ao Render. Esta é a rota principal para o uso mobile/Android do Game Interactive.
 
 ## Termux
 
