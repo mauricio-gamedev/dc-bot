@@ -39,6 +39,13 @@ function formatWait(ms) {
   return `${minutes}min`;
 }
 
+function supporterLabel(member) {
+  if (!member?.roles?.cache) return '👤 Comunidade';
+  if (member.roles.cache.some((role) => role.name === '💎・VIP')) return '💎 VIP';
+  if (member.roles.cache.some((role) => role.name === '⭐・Sub')) return '⭐ Sub';
+  return '👤 Comunidade';
+}
+
 async function announceAchievements(message, achievements) {
   if (!achievements.length) return;
   const embed = achievementAnnouncement(message.client, message.author.id, achievements);
@@ -70,8 +77,6 @@ export async function handleMessageProgress(message) {
     }
   });
 
-  // A missão de chat só avança quando a mensagem também passa pelo cooldown de XP.
-  // Isso impede completar a missão diária com spam em poucos segundos.
   if (gained > 0) {
     await recordMissionMessage(message.guild, message.author.id);
   }
@@ -110,11 +115,14 @@ export async function buildProfileEmbed(guild, user) {
   const current = profile.xp - currentBase;
   const needed = Math.max(1, nextBase - currentBase);
   const badgeCount = profile.achievements.length;
+  const member = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
+  const supporter = supporterLabel(member);
 
   return characterEmbed({
     title: `🐈‍⬛ Perfil de ${user.username}`,
     description: [
       `> **Título:** ${profile.title || 'Sem título'}`,
+      `> **Supporter:** ${supporter}`,
       '',
       `✨ **Nível:** ${level}`,
       `**XP total:** ${profile.xp.toLocaleString('pt-BR')}`,
@@ -125,6 +133,7 @@ export async function buildProfileEmbed(guild, user) {
       `💬 **Mensagens registradas:** ${profile.messages.toLocaleString('pt-BR')}`,
       `🏆 **Ranking XP:** ${rank > 0 ? `#${rank}` : 'sem posição'}`,
       `🔥 **Sequência diária:** ${profile.dailyStreak} dia(s)`,
+      `🔴 **Presenças em lives:** ${profile.liveAttendanceCount || 0}`,
       `🏅 **Conquistas:** ${badgeCount}`,
       '',
       'Use `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
