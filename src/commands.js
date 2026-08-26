@@ -308,8 +308,10 @@ async function handleCommunityCommands(interaction) {
     const text = interaction.options.getString('mensagem') ?? '';
     await interaction.reply({
       embeds: [characterEmbed({
-        title: `🐈‍⬛ ${CHARACTER.name} • ${CHARACTER.title}`,
+        title: `${CHARACTER.name} • ${CHARACTER.title}`,
         description: mascotReply(text, interaction.user.username),
+        presentation: 'hero',
+        seal: 'animated',
       })],
     });
     return true;
@@ -384,12 +386,13 @@ export async function handleCommand(interaction) {
       await interaction.reply({ content: 'Canal de anúncios não encontrado. Execute `/repair` primeiro.', flags: MessageFlags.Ephemeral });
       return true;
     }
-    const embed = new EmbedBuilder()
-      .setColor(BRAND.color)
-      .setTitle('📢 Comunicado oficial')
-      .setDescription(text)
-      .setFooter({ text: `${BRAND.footer} • publicado por ${interaction.user.username}` })
-      .setTimestamp();
+    const embed = characterEmbed({
+      title: '📢 Comunicado oficial',
+      description: text,
+      presentation: 'compact',
+      seal: 'static',
+      footer: `${BRAND.footer} • publicado por ${interaction.user.username}`,
+    });
     await channel.send({ embeds: [embed] });
     await interaction.reply({ content: `✅ Anúncio publicado em <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
     return true;
