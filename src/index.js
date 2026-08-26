@@ -16,6 +16,7 @@ import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
 import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
 import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.js';
 import { eventCommandBuilder, handleEventButton, handleEventCommand } from './core/eventAgenda.js';
+import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
 import {
   handleKickLiveButton,
   kickLiveStatus,
@@ -28,7 +29,12 @@ const guildId = process.env.DISCORD_GUILD_ID?.trim();
 const enableMemberEvents = String(process.env.ENABLE_MEMBER_EVENTS).toLowerCase() === 'true';
 const port = Number(process.env.PORT || 3000);
 const startedAt = new Date();
-const registeredCommandData = [...commandData, ownerCoinCommandData, eventCommandBuilder.toJSON()];
+const registeredCommandData = [
+  ...commandData,
+  ownerCoinCommandData,
+  eventCommandBuilder.toJSON(),
+  ...sealCommandData,
+];
 
 if (!token) {
   console.error('DISCORD_TOKEN não configurado. Copie .env.example para .env ou configure a variável no host.');
@@ -59,7 +65,7 @@ const healthServer = http.createServer((req, res) => {
   const body = {
     ok: ready,
     service: 'MiojoPlays Community Bot',
-    version: '0.4.0',
+    version: '0.5.0',
     character: CHARACTER.name,
     discord: ready ? 'online' : 'connecting',
     kickLive: {
@@ -130,6 +136,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleEventButton(interaction)) return;
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
+    if (await handleSealCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
     if (await handleSetupButton(interaction)) return;
