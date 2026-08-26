@@ -15,7 +15,7 @@ import { flushAllProfiles } from './core/communityStore.js';
 import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
 import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
 import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.js';
-import { eventCommandBuilder, handleEventCommand } from './core/eventAgenda.js';
+import { eventCommandBuilder, handleEventButton, handleEventCommand } from './core/eventAgenda.js';
 import {
   handleKickLiveButton,
   kickLiveStatus,
@@ -127,6 +127,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleKickLiveButton(interaction)) return;
+    if (await handleEventButton(interaction)) return;
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
