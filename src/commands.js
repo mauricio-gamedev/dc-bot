@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
@@ -16,8 +17,15 @@ import {
   mascotReply,
 } from './core/progression.js';
 import { logModerationAction } from './core/logging.js';
+import { characterEmbed, CHARACTER } from './core/character.js';
+import {
+  achievementAnnouncement,
+  handleV3Command,
+  refreshAchievements,
+  v3CommandBuilders,
+} from './core/communityV3.js';
 
-export const commandBuilders = [
+const baseCommandBuilders = [
   new SlashCommandBuilder()
     .setName('setup')
     .setDescription('Monta a estrutura profissional completa do servidor.')
@@ -35,10 +43,8 @@ export const commandBuilders = [
 
   new SlashCommandBuilder()
     .setName('perfil')
-    .setDescription('Mostra nível, XP, MiojoCoins, reputação e posição no ranking.')
-    .addUserOption((option) =>
-      option.setName('membro').setDescription('Perfil de outro membro (opcional).'),
-    ),
+    .setDescription('Mostra nível, XP, MiojoCoins, reputação, título e conquistas.')
+    .addUserOption((option) => option.setName('membro').setDescription('Perfil de outro membro (opcional).')),
 
   new SlashCommandBuilder()
     .setName('daily')
@@ -47,9 +53,7 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName('rep')
     .setDescription('Dá um ponto de reputação para outro membro.')
-    .addUserOption((option) =>
-      option.setName('membro').setDescription('Membro que receberá reputação.').setRequired(true),
-    ),
+    .addUserOption((option) => option.setName('membro').setDescription('Membro que receberá reputação.').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('ranking')
@@ -62,15 +66,14 @@ export const commandBuilders = [
           { name: 'XP', value: 'xp' },
           { name: 'MiojoCoins', value: 'coins' },
           { name: 'Reputação', value: 'rep' },
+          { name: 'Conquistas', value: 'achievements' },
         ),
     ),
 
   new SlashCommandBuilder()
     .setName('mascote')
-    .setDescription('Conversa com o personagem da MiojoPlays.')
-    .addStringOption((option) =>
-      option.setName('mensagem').setDescription('Fala algo para o mascote.').setMaxLength(300),
-    ),
+    .setDescription('Conversa com Mio, o personagem oficial da MiojoPlays.')
+    .addStringOption((option) => option.setName('mensagem').setDescription('Fala algo para o Mio.').setMaxLength(300)),
 
   new SlashCommandBuilder()
     .setName('limpar')
@@ -117,12 +120,11 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName('anuncio')
     .setDescription('Publica um anúncio profissional no canal oficial.')
-    .addStringOption((option) =>
-      option.setName('texto').setDescription('Conteúdo do anúncio.').setRequired(true).setMaxLength(3500),
-    )
+    .addStringOption((option) => option.setName('texto').setDescription('Conteúdo do anúncio.').setRequired(true).setMaxLength(3500))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ];
 
+export const commandBuilders = [...baseCommandBuilders, ...v3CommandBuilders];
 export const commandData = commandBuilders.map((command) => command.toJSON());
 
 function setupConfirmationRow() {
@@ -152,7 +154,7 @@ export async function handleSetupButton(interaction) {
   if (!interaction.isButton() || !interaction.customId.startsWith('setup:')) return false;
 
   if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    await interaction.reply({ content: 'Você precisa ser administrador para usar esta ação.', ephemeral: true });
+    await interaction.reply({ content: 'Você precisa ser administrador para usar esta ação.', flags: MessageFlags.Ephemeral });
     return true;
   }
 
@@ -188,15 +190,10 @@ export async function handleSetupButton(interaction) {
 async function handleModeration(interaction) {
   if (interaction.commandName === 'limpar') {
     const amount = interaction.options.getInteger('quantidade', true);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const deleted = await interaction.channel.bulkDelete(amount, true);
     await interaction.editReply(`🧹 Foram removidas **${deleted.size}** mensagens recentes.`);
-    await logModerationAction(
-      interaction,
-      'Limpeza de chat',
-      `<#${interaction.channel.id}>`,
-      `${deleted.size} mensagens removidas`,
-    );
+    await logModerationAction(interaction, 'Limpeza de chat', `<#${interaction.channel.id}>`, `${deleted.size} mensagens removidas`);
     return true;
   }
 
@@ -204,14 +201,12 @@ async function handleModeration(interaction) {
     const member = interaction.options.getMember('membro');
     const minutes = interaction.options.getInteger('minutos', true);
     const reason = interaction.options.getString('motivo') ?? 'Sem motivo informado';
-
     if (!member?.moderatable) {
-      await interaction.reply({ content: 'Não consigo aplicar timeout nesse membro. Verifique a hierarquia de cargos.', ephemeral: true });
+      await interaction.reply({ content: 'Não consigo aplicar timeout nesse membro. Verifique a hierarquia de cargos.', flags: MessageFlags.Ephemeral });
       return true;
     }
-
     await member.timeout(minutes * 60_000, `${reason} | por ${interaction.user.tag}`);
-    await interaction.reply({ content: `⏱️ ${member} recebeu timeout de **${minutes} min**. Motivo: ${reason}`, ephemeral: true });
+    await interaction.reply({ content: `⏱️ ${member} recebeu timeout de **${minutes} min**. Motivo: ${reason}`, flags: MessageFlags.Ephemeral });
     await logModerationAction(interaction, `Timeout ${minutes}min`, `${member.user.tag} (${member.id})`, reason);
     return true;
   }
@@ -219,15 +214,13 @@ async function handleModeration(interaction) {
   if (interaction.commandName === 'kick') {
     const member = interaction.options.getMember('membro');
     const reason = interaction.options.getString('motivo') ?? 'Sem motivo informado';
-
     if (!member?.kickable) {
-      await interaction.reply({ content: 'Não consigo expulsar esse membro. Verifique a hierarquia de cargos.', ephemeral: true });
+      await interaction.reply({ content: 'Não consigo expulsar esse membro. Verifique a hierarquia de cargos.', flags: MessageFlags.Ephemeral });
       return true;
     }
-
     const target = `${member.user.tag} (${member.id})`;
     await member.kick(`${reason} | por ${interaction.user.tag}`);
-    await interaction.reply({ content: `👢 **${member.user.tag}** foi expulso. Motivo: ${reason}`, ephemeral: true });
+    await interaction.reply({ content: `👢 **${member.user.tag}** foi expulso. Motivo: ${reason}`, flags: MessageFlags.Ephemeral });
     await logModerationAction(interaction, 'Kick', target, reason);
     return true;
   }
@@ -236,14 +229,12 @@ async function handleModeration(interaction) {
     const user = interaction.options.getUser('membro', true);
     const reason = interaction.options.getString('motivo') ?? 'Sem motivo informado';
     const member = interaction.options.getMember('membro');
-
     if (member && !member.bannable) {
-      await interaction.reply({ content: 'Não consigo banir esse membro. Verifique a hierarquia de cargos.', ephemeral: true });
+      await interaction.reply({ content: 'Não consigo banir esse membro. Verifique a hierarquia de cargos.', flags: MessageFlags.Ephemeral });
       return true;
     }
-
     await interaction.guild.members.ban(user.id, { reason: `${reason} | por ${interaction.user.tag}` });
-    await interaction.reply({ content: `🔨 **${user.tag}** foi banido. Motivo: ${reason}`, ephemeral: true });
+    await interaction.reply({ content: `🔨 **${user.tag}** foi banido. Motivo: ${reason}`, flags: MessageFlags.Ephemeral });
     await logModerationAction(interaction, 'Ban', `${user.tag} (${user.id})`, reason);
     return true;
   }
@@ -254,7 +245,7 @@ async function handleModeration(interaction) {
 async function handleCommunityCommands(interaction) {
   if (interaction.commandName === 'perfil') {
     const user = interaction.options.getUser('membro') ?? interaction.user;
-    const embed = await buildProfileEmbed(interaction.guild, user, interaction.client);
+    const embed = await buildProfileEmbed(interaction.guild, user);
     await interaction.reply({ embeds: [embed] });
     return true;
   }
@@ -263,43 +254,42 @@ async function handleCommunityCommands(interaction) {
     const result = await claimDaily(interaction.guild, interaction.user.id);
     if (!result.ok) {
       await interaction.reply({
-        embeds: [resultEmbed(
-          '⏳ Daily ainda em cooldown',
-          `Volta em aproximadamente **${result.wait}** para coletar novamente.`,
-          BRAND.warning,
-        )],
-        ephemeral: true,
+        embeds: [resultEmbed('⏳ Daily ainda em cooldown', `Volta em aproximadamente **${result.wait}** para coletar novamente.`, BRAND.warning)],
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
 
     await interaction.reply({
-      embeds: [resultEmbed(
-        '🍜 Daily coletado!',
-        `Você recebeu **${result.reward} MiojoCoins**.\n🔥 Sequência atual: **${result.streak} dia(s)**.`,
-        BRAND.success,
-      )],
+      embeds: [characterEmbed({
+        title: '🍜 Daily coletado!',
+        description: `${CHARACTER.name}: ${interaction.user}, recompensa liberada.\n\nVocê recebeu **${result.reward} MiojoCoins**.\n🔥 Sequência atual: **${result.streak} dia(s)**.`,
+        color: CHARACTER.palette.success,
+      })],
     });
+
+    if (result.unlocked?.length) {
+      const achievement = achievementAnnouncement(interaction.client, interaction.user.id, result.unlocked);
+      if (achievement) await interaction.followUp({ embeds: [achievement] }).catch(() => {});
+    }
     return true;
   }
 
   if (interaction.commandName === 'rep') {
     const target = interaction.options.getUser('membro', true);
     if (target.bot) {
-      await interaction.reply({ content: 'Bots não entram no sistema de reputação.', ephemeral: true });
+      await interaction.reply({ content: 'Bots não entram no sistema de reputação.', flags: MessageFlags.Ephemeral });
       return true;
     }
-
     const result = await giveReputation(interaction.guild, interaction.user.id, target.id);
     if (!result.ok && result.reason === 'self') {
-      await interaction.reply({ content: 'Você não pode dar reputação para si mesmo 😼.', ephemeral: true });
+      await interaction.reply({ content: 'Você não pode dar reputação para si mesmo 😼.', flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!result.ok) {
-      await interaction.reply({ content: `Você poderá dar reputação novamente em **${result.wait}**.`, ephemeral: true });
+      await interaction.reply({ content: `Você poderá dar reputação novamente em **${result.wait}**.`, flags: MessageFlags.Ephemeral });
       return true;
     }
-
     await interaction.reply({
       content: `💜 <@${interaction.user.id}> deu **+1 reputação** para <@${target.id}>. Agora ele(a) tem **${result.reputation}**.`,
       allowedMentions: { users: [interaction.user.id, target.id] },
@@ -316,13 +306,12 @@ async function handleCommunityCommands(interaction) {
 
   if (interaction.commandName === 'mascote') {
     const text = interaction.options.getString('mensagem') ?? '';
-    const embed = resultEmbed(
-      '🐈‍⬛ Mascote MiojoPlays',
-      mascotReply(text, interaction.user.username),
-    );
-    const avatar = interaction.client.user?.displayAvatarURL({ size: 256 });
-    if (avatar) embed.setThumbnail(avatar);
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({
+      embeds: [characterEmbed({
+        title: `🐈‍⬛ ${CHARACTER.name} • ${CHARACTER.title}`,
+        description: mascotReply(text, interaction.user.username),
+      })],
+    });
     return true;
   }
 
@@ -342,19 +331,20 @@ export async function handleCommand(interaction) {
         '• áreas privadas de Staff/VIP;',
         '• regras, tickets e mensagens iniciais;',
         '• logs e AutoMod nativo;',
-        '• sistema persistente de XP, níveis, MiojoCoins e reputação;',
-        '• área de ranking e armazenamento interno do bot.',
+        '• XP, níveis, MiojoCoins e reputação;',
+        '• Mio, personagem oficial da comunidade;',
+        '• loja, títulos, missões, conquistas e auto-cargos;',
+        '• sugestões com votação e status da staff.',
         '',
         '**O processo é idempotente:** executar novamente não cria cópias dos itens gerenciados.',
       ].join('\n'),
     );
-
-    await interaction.reply({ embeds: [embed], components: [setupConfirmationRow()], ephemeral: true });
+    await interaction.reply({ embeds: [embed], components: [setupConfirmationRow()], flags: MessageFlags.Ephemeral });
     return true;
   }
 
   if (interaction.commandName === 'repair') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const report = await buildGuild(interaction.guild, { repairOnly: true });
       await interaction.editReply({ embeds: [resultEmbed('🛠️ Reparo concluído', formatSetupReport(report), BRAND.success)] });
@@ -368,23 +358,21 @@ export async function handleCommand(interaction) {
     await interaction.guild.roles.fetch();
     await interaction.guild.channels.fetch();
     const status = await inspectGuild(interaction.guild);
-
     const description = status.healthy
-      ? '🟢 Estrutura, canais e regras de segurança principais estão íntegros.'
+      ? '🟢 Estrutura, canais, AutoMod e sistemas principais estão íntegros.'
       : [
           '🟠 Foram encontradas diferenças na estrutura.',
           '',
           status.missingRoles.length ? `**Cargos faltando:** ${status.missingRoles.join(', ')}` : null,
           status.missingCategories.length ? `**Categorias faltando:** ${status.missingCategories.join(', ')}` : null,
           status.missingChannels.length ? `**Canais faltando:** ${status.missingChannels.join(', ')}` : null,
-          status.missingAutoMod.length ? `**AutoMod faltando:** ${status.missingAutoMod.join(', ')}` : null,
+          status.missingAutoMod?.length ? `**AutoMod faltando:** ${status.missingAutoMod.join(', ')}` : null,
           '',
           'Execute `/repair` para corrigir automaticamente.',
         ].filter(Boolean).join('\n');
-
     await interaction.reply({
       embeds: [resultEmbed('📊 Status da comunidade', description, status.healthy ? BRAND.success : BRAND.warning)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
@@ -392,25 +380,23 @@ export async function handleCommand(interaction) {
   if (interaction.commandName === 'anuncio') {
     const text = interaction.options.getString('texto', true);
     const channel = interaction.guild.channels.cache.find((candidate) => candidate.name === '📢・anúncios' && candidate.isTextBased());
-
     if (!channel) {
-      await interaction.reply({ content: 'Canal de anúncios não encontrado. Execute `/repair` primeiro.', ephemeral: true });
+      await interaction.reply({ content: 'Canal de anúncios não encontrado. Execute `/repair` primeiro.', flags: MessageFlags.Ephemeral });
       return true;
     }
-
     const embed = new EmbedBuilder()
       .setColor(BRAND.color)
       .setTitle('📢 Comunicado oficial')
       .setDescription(text)
       .setFooter({ text: `${BRAND.footer} • publicado por ${interaction.user.username}` })
       .setTimestamp();
-
     await channel.send({ embeds: [embed] });
-    await interaction.reply({ content: `✅ Anúncio publicado em <#${channel.id}>.`, ephemeral: true });
+    await interaction.reply({ content: `✅ Anúncio publicado em <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
     return true;
   }
 
   if (await handleCommunityCommands(interaction)) return true;
+  if (await handleV3Command(interaction)) return true;
   if (await handleModeration(interaction)) return true;
   return false;
 }
