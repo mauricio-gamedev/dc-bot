@@ -30,7 +30,7 @@ export MIOJO_RELAY_TOKEN='COLE_A_CHAVE_AQUI'
 go run .
 ```
 
-Quando aparecer `MiojoPlays Bedrock Relay ativo`, mantenha o processo em execução, abra o Minecraft, entre em um mundo com cheats habilitados e execute:
+Inicie sempre o relay antes do comando `/connect` no Minecraft. Quando aparecer `MiojoPlays Bedrock Relay ativo`, mantenha o processo em execução, abra o Minecraft, entre em um mundo com cheats habilitados e execute:
 
 ```text
 /connect ws://127.0.0.1:19131/ws
