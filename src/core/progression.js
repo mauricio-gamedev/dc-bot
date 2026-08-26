@@ -70,7 +70,11 @@ export async function handleMessageProgress(message) {
     }
   });
 
-  await recordMissionMessage(message.guild, message.author.id);
+  // A missão de chat só avança quando a mensagem também passa pelo cooldown de XP.
+  // Isso impede completar a missão diária com spam em poucos segundos.
+  if (gained > 0) {
+    await recordMissionMessage(message.guild, message.author.id);
+  }
 
   const newLevel = levelFromXp(profile.xp);
   if (gained > 0 && newLevel > oldLevel) {
@@ -123,7 +127,7 @@ export async function buildProfileEmbed(guild, user) {
       `🔥 **Sequência diária:** ${profile.dailyStreak} dia(s)`,
       `🏅 **Conquistas:** ${badgeCount}`,
       '',
-      `Use \`/loja\`, \`/missoes\` e \`/conquistas\` para evoluir o perfil.`,
+      'Use `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
     ].join('\n'),
   }).setAuthor({
     name: 'MiojoPlays • Character Profile',
@@ -145,7 +149,7 @@ export async function claimDaily(guild, userId) {
     : 1;
   const reward = randomInt(180, 300) + Math.min(streak, 30) * 10;
 
-  const updated = await mutateProfile(guild, userId, (data) => {
+  await mutateProfile(guild, userId, (data) => {
     data.dailyStreak = streak;
     data.lastDailyAt = now;
     data.coins += reward;
@@ -181,7 +185,13 @@ export async function giveReputation(guild, giverId, targetId) {
 
 export async function buildLeaderboardEmbed(guild, client, type = 'xp') {
   const profiles = await getAllProfiles(guild);
-  const key = type === 'coins' ? 'coins' : type === 'rep' ? 'reputation' : type === 'achievements' ? 'achievements' : 'xp';
+  const key = type === 'coins'
+    ? 'coins'
+    : type === 'rep'
+      ? 'reputation'
+      : type === 'achievements'
+        ? 'achievements'
+        : 'xp';
   const valueOf = (profile) => key === 'achievements' ? profile.achievements.length : profile[key];
   const icon = key === 'coins' ? '🍜' : key === 'reputation' ? '💜' : key === 'achievements' ? '🏅' : '✨';
   const label = key === 'coins' ? 'MiojoCoins' : key === 'reputation' ? 'Reputação' : key === 'achievements' ? 'Conquistas' : 'XP';
