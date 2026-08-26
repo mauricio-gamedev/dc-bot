@@ -1,6 +1,12 @@
-import { EmbedBuilder } from 'discord.js';
-import { BRAND } from './blueprint.js';
 import { getAllProfiles, getProfile, mutateProfile } from './communityStore.js';
+import { characterEmbed, characterLine, CHARACTER, mascotReply as mioReply } from './character.js';
+import {
+  achievementAnnouncement,
+  recordMissionDaily,
+  recordMissionMessage,
+  recordMissionRep,
+  refreshAchievements,
+} from './communityV3.js';
 
 const XP_COOLDOWN_MS = 60_000;
 const DAILY_COOLDOWN_MS = 24 * 60 * 60_000;
@@ -33,17 +39,15 @@ function formatWait(ms) {
   return `${minutes}min`;
 }
 
-function mascotEmbed(client, title, description, color = BRAND.color) {
-  const embed = new EmbedBuilder()
-    .setColor(color)
-    .setTitle(title)
-    .setDescription(description)
-    .setFooter({ text: `${BRAND.footer} • 🐈‍⬛ Miojo System` })
-    .setTimestamp();
-
-  const avatar = client.user?.displayAvatarURL({ size: 256 });
-  if (avatar) embed.setThumbnail(avatar);
-  return embed;
+async function announceAchievements(message, achievements) {
+  if (!achievements.length) return;
+  const embed = achievementAnnouncement(message.client, message.author.id, achievements);
+  if (!embed) return;
+  await message.channel.send({
+    content: `<@${message.author.id}>`,
+    embeds: [embed],
+    allowedMentions: { users: [message.author.id] },
+  }).catch(() => {});
 }
 
 export async function handleMessageProgress(message) {
@@ -66,6 +70,12 @@ export async function handleMessageProgress(message) {
     }
   });
 
+  // A missão de chat só avança quando a mensagem também passa pelo cooldown de XP.
+  // Isso impede completar a missão diária com spam em poucos segundos.
+  if (gained > 0) {
+    await recordMissionMessage(message.guild, message.author.id);
+  }
+
   const newLevel = levelFromXp(profile.xp);
   if (gained > 0 && newLevel > oldLevel) {
     const bonus = 25 + newLevel * 5;
@@ -74,30 +84,24 @@ export async function handleMessageProgress(message) {
       data.level = newLevel;
     }, { immediate: true });
 
-    const lines = [
-      'As luzes roxas acenderam. Mais um nível desbloqueado. 😼',
-      'O gato preto aprovou essa evolução. Continua assim. 🐈‍⬛',
-      'Subiu de nível sem precisar farmar missão impossível. Aí sim. ⚡',
-      'Mais presença na comunidade, mais nível. Tá ficando forte. 💜',
-    ];
-
     await message.channel.send({
       content: `<@${message.author.id}>`,
-      embeds: [mascotEmbed(
-        message.client,
-        `✨ Nível ${newLevel} alcançado!`,
-        `${lines[randomInt(0, lines.length - 1)]}\n\n🎁 Bônus: **${bonus} MiojoCoins**`,
-        BRAND.success,
-      )],
+      embeds: [characterEmbed({
+        title: `✨ Nível ${newLevel} alcançado!`,
+        description: `${characterLine('level')}\n\n🎁 Bônus: **${bonus} MiojoCoins**`,
+        color: CHARACTER.palette.success,
+      })],
       allowedMentions: { users: [message.author.id] },
     }).catch(() => {});
   }
 
-  return profile;
+  const achievementResult = await refreshAchievements(message.guild, message.author.id);
+  await announceAchievements(message, achievementResult.unlocked);
+  return achievementResult.profile;
 }
 
-export async function buildProfileEmbed(guild, user, client) {
-  const profile = await getProfile(guild, user.id);
+export async function buildProfileEmbed(guild, user) {
+  const { profile } = await refreshAchievements(guild, user.id);
   const all = (await getAllProfiles(guild)).sort((a, b) => b.xp - a.xp);
   const rank = all.findIndex((item) => item.userId === user.id) + 1;
   const level = levelFromXp(profile.xp);
@@ -105,13 +109,15 @@ export async function buildProfileEmbed(guild, user, client) {
   const nextBase = xpForLevel(level + 1);
   const current = profile.xp - currentBase;
   const needed = Math.max(1, nextBase - currentBase);
+  const badgeCount = profile.achievements.length;
 
-  return mascotEmbed(
-    client,
-    `🐈‍⬛ Perfil de ${user.username}`,
-    [
-      `**Nível:** ${level}`,
-      `**XP:** ${profile.xp.toLocaleString('pt-BR')}`,
+  return characterEmbed({
+    title: `🐈‍⬛ Perfil de ${user.username}`,
+    description: [
+      `> **Título:** ${profile.title || 'Sem título'}`,
+      '',
+      `✨ **Nível:** ${level}`,
+      `**XP total:** ${profile.xp.toLocaleString('pt-BR')}`,
       `${progressBar(current, needed)}  ${current}/${needed}`,
       '',
       `🍜 **MiojoCoins:** ${profile.coins.toLocaleString('pt-BR')}`,
@@ -119,10 +125,13 @@ export async function buildProfileEmbed(guild, user, client) {
       `💬 **Mensagens registradas:** ${profile.messages.toLocaleString('pt-BR')}`,
       `🏆 **Ranking XP:** ${rank > 0 ? `#${rank}` : 'sem posição'}`,
       `🔥 **Sequência diária:** ${profile.dailyStreak} dia(s)`,
+      `🏅 **Conquistas:** ${badgeCount}`,
+      '',
+      'Use `/loja`, `/missoes` e `/conquistas` para evoluir o perfil.',
     ].join('\n'),
-  ).setAuthor({
-    name: BRAND.name,
-    iconURL: client.user?.displayAvatarURL({ size: 128 }),
+  }).setAuthor({
+    name: 'MiojoPlays • Character Profile',
+    iconURL: user.displayAvatarURL({ size: 128 }),
   });
 }
 
@@ -140,13 +149,15 @@ export async function claimDaily(guild, userId) {
     : 1;
   const reward = randomInt(180, 300) + Math.min(streak, 30) * 10;
 
-  const updated = await mutateProfile(guild, userId, (data) => {
+  await mutateProfile(guild, userId, (data) => {
     data.dailyStreak = streak;
     data.lastDailyAt = now;
     data.coins += reward;
   }, { immediate: true });
 
-  return { ok: true, reward, streak, profile: updated };
+  await recordMissionDaily(guild, userId);
+  const achievements = await refreshAchievements(guild, userId);
+  return { ok: true, reward, streak, profile: achievements.profile, unlocked: achievements.unlocked };
 }
 
 export async function giveReputation(guild, giverId, targetId) {
@@ -167,18 +178,27 @@ export async function giveReputation(guild, giverId, targetId) {
     data.reputation += 1;
   }, { immediate: true });
 
+  await recordMissionRep(guild, giverId);
+  await refreshAchievements(guild, targetId);
   return { ok: true, reputation: target.reputation };
 }
 
 export async function buildLeaderboardEmbed(guild, client, type = 'xp') {
   const profiles = await getAllProfiles(guild);
-  const key = type === 'coins' ? 'coins' : type === 'rep' ? 'reputation' : 'xp';
-  const icon = key === 'coins' ? '🍜' : key === 'reputation' ? '💜' : '✨';
-  const label = key === 'coins' ? 'MiojoCoins' : key === 'reputation' ? 'Reputação' : 'XP';
+  const key = type === 'coins'
+    ? 'coins'
+    : type === 'rep'
+      ? 'reputation'
+      : type === 'achievements'
+        ? 'achievements'
+        : 'xp';
+  const valueOf = (profile) => key === 'achievements' ? profile.achievements.length : profile[key];
+  const icon = key === 'coins' ? '🍜' : key === 'reputation' ? '💜' : key === 'achievements' ? '🏅' : '✨';
+  const label = key === 'coins' ? 'MiojoCoins' : key === 'reputation' ? 'Reputação' : key === 'achievements' ? 'Conquistas' : 'XP';
 
   const sorted = profiles
-    .filter((profile) => profile[key] > 0)
-    .sort((a, b) => b[key] - a[key])
+    .filter((profile) => valueOf(profile) > 0)
+    .sort((a, b) => valueOf(b) - valueOf(a))
     .slice(0, 10);
 
   const lines = [];
@@ -186,46 +206,15 @@ export async function buildLeaderboardEmbed(guild, client, type = 'xp') {
     const profile = sorted[i];
     const user = await client.users.fetch(profile.userId).catch(() => null);
     const name = user?.username ?? `Usuário ${profile.userId}`;
-    lines.push(`**${i + 1}.** ${name} — ${icon} **${profile[key].toLocaleString('pt-BR')}**`);
+    lines.push(`**${i + 1}.** ${name} — ${icon} **${valueOf(profile).toLocaleString('pt-BR')}**`);
   }
 
-  return mascotEmbed(
-    client,
-    `🏆 Ranking • ${label}`,
-    lines.length ? lines.join('\n') : 'Ainda não há dados suficientes para montar o ranking.',
-  );
+  return characterEmbed({
+    title: `🏆 Ranking • ${label}`,
+    description: lines.length ? lines.join('\n') : 'Ainda não há dados suficientes para montar o ranking.',
+  });
 }
 
 export function mascotReply(text, username) {
-  const input = String(text || '').trim().toLowerCase();
-
-  if (!input) {
-    return `🐈‍⬛ E aí, **${username}**. Tô de olho na comunidade. Usa \`/perfil\`, \`/daily\` ou \`/ranking\` pra começar.`;
-  }
-  if (/(oi|olá|ola|salve|eae|e aí)/i.test(input)) {
-    return `🐈‍⬛ Salve, **${username}**. Chegou na área certa. 💜`;
-  }
-  if (/(live|kick|stream)/i.test(input)) {
-    return '🔴 Quando a live estiver rolando, a comunidade vira base de operação. Clips, resenha e caos controlado.';
-  }
-  if (/(vip|sub)/i.test(input)) {
-    return '💎 VIP e Sub são os cargos especiais da comunidade. Quanto mais o sistema evoluir, mais benefícios a gente consegue automatizar.';
-  }
-  if (/(nível|nivel|xp|rank)/i.test(input)) {
-    return '✨ Conversa de verdade gera XP. Spam não: existe cooldown justamente pra manter o ranking justo.';
-  }
-  if (/(moeda|coin|dinheiro|daily)/i.test(input)) {
-    return '🍜 MiojoCoins vêm do daily, bônus de nível e futuras atividades. Guarda porque a lojinha vem depois.';
-  }
-  if (/(motiv|desanim|cansad)/i.test(input)) {
-    return '🐈‍⬛ Um passo bem feito vale mais que dez feitos no automático. Continua construindo.';
-  }
-
-  const replies = [
-    `🐈‍⬛ Entendi, **${username}**. Ainda tô evoluindo, mas já anotei essa energia.`,
-    '💜 A comunidade tá só começando. Cada expansão vai deixar esse bot menos “ferramenta” e mais personagem.',
-    '😼 Isso tem cara de coisa que vai virar feature numa atualização futura.',
-    '⚡ Tô online, de olho no servidor e acumulando ideias.',
-  ];
-  return replies[randomInt(0, replies.length - 1)];
+  return mioReply(text, username);
 }

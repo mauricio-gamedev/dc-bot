@@ -2,11 +2,11 @@ import { ChannelType, PermissionFlagsBits } from 'discord.js';
 
 export const BRAND = {
   name: 'MiojoPlays Community',
-  color: 0x8b5cf6,
+  color: 0x7c3aed,
   success: 0x22c55e,
   warning: 0xf59e0b,
   danger: 0xef4444,
-  footer: 'MiojoPlays • Community System',
+  footer: 'MiojoPlays • Mio Community System',
 };
 
 export const ROLE_BLUEPRINT = [
@@ -47,41 +47,15 @@ export const ROLE_BLUEPRINT = [
       PermissionFlagsBits.ReadMessageHistory,
     ],
   },
-  {
-    name: '🎥・Criador',
-    color: 0xec4899,
-    hoist: true,
-    mentionable: true,
-    permissions: [],
-  },
-  {
-    name: '💎・VIP',
-    color: 0xa855f7,
-    hoist: true,
-    mentionable: true,
-    permissions: [],
-  },
-  {
-    name: '⭐・Sub',
-    color: 0x22c55e,
-    hoist: false,
-    mentionable: true,
-    permissions: [],
-  },
-  {
-    name: '🤖・Bots',
-    color: 0x64748b,
-    hoist: false,
-    mentionable: false,
-    permissions: [],
-  },
-  {
-    name: '👤・Membro',
-    color: 0x94a3b8,
-    hoist: false,
-    mentionable: false,
-    permissions: [],
-  },
+  { name: '🎥・Criador', color: 0xec4899, hoist: true, mentionable: true, permissions: [] },
+  { name: '💎・VIP', color: 0xa855f7, hoist: true, mentionable: true, permissions: [] },
+  { name: '⭐・Sub', color: 0x22c55e, hoist: false, mentionable: true, permissions: [] },
+  { name: '🤖・Bots', color: 0x64748b, hoist: false, mentionable: false, permissions: [] },
+  { name: '👤・Membro', color: 0x94a3b8, hoist: false, mentionable: false, permissions: [] },
+  { name: '🎮・Games', color: 0x6366f1, hoist: false, mentionable: true, permissions: [] },
+  { name: '🔴・Lives', color: 0xef4444, hoist: false, mentionable: true, permissions: [] },
+  { name: '🎉・Eventos', color: 0xf59e0b, hoist: false, mentionable: true, permissions: [] },
+  { name: '⛏️・Minecraft', color: 0x22c55e, hoist: false, mentionable: true, permissions: [] },
 ];
 
 export const CATEGORY_BLUEPRINT = [
@@ -91,7 +65,7 @@ export const CATEGORY_BLUEPRINT = [
       { name: '👋・boas-vindas', type: ChannelType.GuildText, readOnly: true, topic: 'Comece por aqui. Informações essenciais da comunidade MiojoPlays.' },
       { name: '📜・regras', type: ChannelType.GuildText, readOnly: true, topic: 'Regras oficiais da comunidade.' },
       { name: '📢・anúncios', type: ChannelType.GuildText, readOnly: true, topic: 'Novidades, atualizações e comunicados importantes.' },
-      { name: '🎭・cargos', type: ChannelType.GuildText, readOnly: true, topic: 'Informações sobre cargos e benefícios da comunidade.' },
+      { name: '🎭・cargos', type: ChannelType.GuildText, readOnly: true, topic: 'Escolha cargos de interesse e veja benefícios da comunidade.' },
     ],
   },
   {
@@ -102,8 +76,11 @@ export const CATEGORY_BLUEPRINT = [
       { name: '📸・mídia', type: ChannelType.GuildText, topic: 'Prints, fotos, artes e outros conteúdos da comunidade.' },
       { name: '🎬・clips', type: ChannelType.GuildText, topic: 'Clipes e momentos marcantes.' },
       { name: '😂・memes', type: ChannelType.GuildText, topic: 'Memes e conteúdo descontraído.' },
-      { name: '💡・sugestões', type: ChannelType.GuildText, topic: 'Sugestões para melhorar o servidor e as lives.' },
+      { name: '💡・sugestões', type: ChannelType.GuildText, topic: 'Sugestões com votação e status da staff.' },
       { name: '🏆・ranking', type: ChannelType.GuildText, readOnly: true, topic: 'Ranking de XP, reputação e MiojoCoins da comunidade.' },
+      { name: '🛒・loja', type: ChannelType.GuildText, readOnly: true, topic: 'Loja de títulos e cosméticos usando MiojoCoins.' },
+      { name: '🎯・missões', type: ChannelType.GuildText, readOnly: true, topic: 'Missões diárias, recompensas e progressão.' },
+      { name: '🏅・conquistas', type: ChannelType.GuildText, readOnly: true, topic: 'Conquistas, badges e marcos da comunidade.' },
     ],
   },
   {
