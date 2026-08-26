@@ -27,6 +27,8 @@ function defaultProfile(userId) {
     liveAttendanceSessions: [],
     eventParticipationCount: 0,
     eventParticipationIds: [],
+    ownedSeals: [],
+    equippedSeal: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -59,6 +61,10 @@ function normalizeProfile(userId, raw = {}) {
   data.missionClaimed = normalizeStringArray(data.missionClaimed);
   data.liveAttendanceSessions = normalizeStringArray(data.liveAttendanceSessions).slice(-100);
   data.eventParticipationIds = normalizeStringArray(data.eventParticipationIds).slice(-100);
+  data.ownedSeals = normalizeStringArray(data.ownedSeals).slice(-50);
+  data.equippedSeal = typeof data.equippedSeal === 'string' && data.equippedSeal.length <= 80
+    ? data.equippedSeal
+    : '';
   data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
   data.missionDaily = Boolean(data.missionDaily);
   data.missionRep = Boolean(data.missionRep);
@@ -165,6 +171,8 @@ function serializeProfile(profile) {
     liveAttendanceSessions: profile.liveAttendanceSessions,
     eventParticipationCount: profile.eventParticipationCount,
     eventParticipationIds: profile.eventParticipationIds,
+    ownedSeals: profile.ownedSeals,
+    equippedSeal: profile.equippedSeal,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
