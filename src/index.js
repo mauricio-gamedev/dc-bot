@@ -15,6 +15,7 @@ import { flushAllProfiles } from './core/communityStore.js';
 import { characterEmbed, characterLine, CHARACTER } from './core/character.js';
 import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
 import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.js';
+import { eventCommandBuilder, handleEventCommand } from './core/eventAgenda.js';
 import {
   handleKickLiveButton,
   kickLiveStatus,
@@ -27,7 +28,7 @@ const guildId = process.env.DISCORD_GUILD_ID?.trim();
 const enableMemberEvents = String(process.env.ENABLE_MEMBER_EVENTS).toLowerCase() === 'true';
 const port = Number(process.env.PORT || 3000);
 const startedAt = new Date();
-const registeredCommandData = [...commandData, ownerCoinCommandData];
+const registeredCommandData = [...commandData, ownerCoinCommandData, eventCommandBuilder.toJSON()];
 
 if (!token) {
   console.error('DISCORD_TOKEN não configurado. Copie .env.example para .env ou configure a variável no host.');
@@ -127,6 +128,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleKickLiveButton(interaction)) return;
     if (await handleOwnerCoinCommand(interaction)) return;
+    if (await handleEventCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
     if (await handleSetupButton(interaction)) return;
