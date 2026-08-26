@@ -1,7 +1,10 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
-const DEFAULT_CHARACTER_ASSET = 'https://raw.githubusercontent.com/mauricio-gamedev/dc-bot/main/assets/mio-character.webp';
+const RAW_BASE = 'https://raw.githubusercontent.com/mauricio-gamedev/dc-bot/main/assets';
+const DEFAULT_CHARACTER_ASSET = `${RAW_BASE}/mio-character.webp`;
+const DEFAULT_BADGE_STATIC = `${RAW_BASE}/miojo-seal-static.png`;
+const DEFAULT_BADGE_ANIMATED = `${RAW_BASE}/miojo-seal-animated.gif`;
 
 export const CHARACTER = {
   name: 'Mio',
@@ -35,8 +38,8 @@ export function characterAssets() {
   const avatar = validHttpUrl(process.env.MIO_CHARACTER_IMAGE_URL) ?? DEFAULT_CHARACTER_ASSET;
   const banner = validHttpUrl(process.env.MIO_CHARACTER_BANNER_URL);
   const profile = validHttpUrl(process.env.MIO_CHARACTER_PROFILE_URL) ?? banner ?? avatar;
-  const badge = validHttpUrl(process.env.MIO_BADGE_IMAGE_URL);
-  const animatedBadge = validHttpUrl(process.env.MIO_BADGE_ANIMATED_URL) ?? badge;
+  const badge = validHttpUrl(process.env.MIO_BADGE_IMAGE_URL) ?? DEFAULT_BADGE_STATIC;
+  const animatedBadge = validHttpUrl(process.env.MIO_BADGE_ANIMATED_URL) ?? DEFAULT_BADGE_ANIMATED;
   return { avatar, banner, profile, badge, animatedBadge };
 }
 
@@ -56,11 +59,15 @@ export function characterEmbed({
     .setFooter({ text: footer })
     .setTimestamp();
 
-  if (presentation === 'compact' && assets.avatar) {
-    embed.setThumbnail(assets.avatar);
-  } else if (presentation === 'hero') {
+  // O selo animado vira a assinatura visual do Mio. O fallback estático continua disponível.
+  const seal = assets.animatedBadge ?? assets.badge;
+  if (seal) embed.setThumbnail(seal);
+
+  if (presentation === 'hero') {
     const visual = validHttpUrl(image) ?? assets.profile ?? assets.avatar;
     if (visual) embed.setImage(visual);
+  } else if (presentation === 'compact' && !seal && assets.avatar) {
+    embed.setThumbnail(assets.avatar);
   }
 
   return embed;
@@ -128,6 +135,6 @@ export function characterVisualStatus() {
     heroReady: Boolean(assets.profile),
     badgeReady: Boolean(assets.badge || assets.animatedBadge),
     assets,
-    fallback: `${BRAND.name} usa o asset oficial empacotado no repositório.`,
+    fallback: `${BRAND.name} usa os assets oficiais empacotados no repositório.`,
   };
 }
