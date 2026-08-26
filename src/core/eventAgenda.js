@@ -8,8 +8,11 @@ import {
 } from 'discord.js';
 import { BRAND } from './blueprint.js';
 import { characterEmbed, CHARACTER } from './character.js';
+import { mutateProfile } from './communityStore.js';
 
 const publishing = new Set();
+const eventClaims = new Set();
+const EVENT_JOIN_PREFIX = 'event:join:';
 
 export const eventCommandBuilder = new SlashCommandBuilder()
   .setName('evento')
@@ -71,6 +74,84 @@ function eventRole(guild) {
   return guild.roles.cache.find((role) => role.name === '🎉・Eventos') ?? null;
 }
 
+function createEventId() {
+  return `evt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function eventComponents(eventId, link) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${EVENT_JOIN_PREFIX}${eventId}`)
+      .setLabel('Registrar participação')
+      .setEmoji('🎟️')
+      .setStyle(ButtonStyle.Success),
+  );
+
+  if (link) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel('Abrir link do evento')
+        .setStyle(ButtonStyle.Link)
+        .setURL(link),
+    );
+  }
+
+  return [row];
+}
+
+export async function handleEventButton(interaction) {
+  if (!interaction.isButton() || !interaction.guild) return false;
+  if (!interaction.customId.startsWith(EVENT_JOIN_PREFIX)) return false;
+
+  const eventId = interaction.customId.slice(EVENT_JOIN_PREFIX.length);
+  if (!/^evt-[a-z0-9-]{8,50}$/i.test(eventId)) {
+    await interaction.reply({
+      content: 'Esse registro de evento não é mais válido.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const lockKey = `${interaction.guild.id}:${interaction.user.id}:${eventId}`;
+  if (eventClaims.has(lockKey)) {
+    await interaction.reply({
+      content: 'Seu registro desse evento já está sendo processado.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  eventClaims.add(lockKey);
+  try {
+    let alreadyRegistered = false;
+    const profile = await mutateProfile(interaction.guild, interaction.user.id, (data) => {
+      if (data.eventParticipationIds.includes(eventId)) {
+        alreadyRegistered = true;
+        return;
+      }
+      data.eventParticipationIds.push(eventId);
+      data.eventParticipationIds = data.eventParticipationIds.slice(-100);
+      data.eventParticipationCount += 1;
+    }, { immediate: true });
+
+    if (alreadyRegistered) {
+      await interaction.reply({
+        content: `🎟️ Você já registrou participação neste evento. Total no perfil: **${profile.eventParticipationCount}**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+
+    await interaction.reply({
+      content: `✅ Participação registrada no seu perfil. Eventos oficiais: **${profile.eventParticipationCount}**.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  } finally {
+    eventClaims.delete(lockKey);
+  }
+}
+
 export async function handleEventCommand(interaction) {
   if (!interaction.isChatInputCommand() || !interaction.guild) return false;
   if (interaction.commandName !== 'evento') return false;
@@ -122,6 +203,7 @@ export async function handleEventCommand(interaction) {
       return true;
     }
 
+    const eventId = createEventId();
     const embed = characterEmbed({
       title: `🎉 ${title}`,
       description: [
@@ -132,8 +214,8 @@ export async function handleEventCommand(interaction) {
         '',
         details,
         '',
-        '✅ Reaja com **✅** se vai participar.',
-        '🤔 Reaja com **🤔** se talvez participe.',
+        '🎟️ Use **Registrar participação** para adicionar este evento ao seu perfil.',
+        '✅/🤔 As reações continuam disponíveis como enquete rápida da comunidade.',
       ].join('\n'),
       color: CHARACTER.palette.accent,
       presentation: 'badge',
@@ -141,23 +223,11 @@ export async function handleEventCommand(interaction) {
       footer: `${BRAND.footer} • Evento oficial`,
     });
 
-    const components = [];
-    if (link) {
-      components.push(
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setLabel('Abrir link do evento')
-            .setStyle(ButtonStyle.Link)
-            .setURL(link),
-        ),
-      );
-    }
-
     const role = eventRole(interaction.guild);
     const sent = await channel.send({
       content: role ? `<@&${role.id}>` : undefined,
       embeds: [embed],
-      components,
+      components: eventComponents(eventId, link),
       allowedMentions: role ? { roles: [role.id] } : { parse: [] },
     });
 
