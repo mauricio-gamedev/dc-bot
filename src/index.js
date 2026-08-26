@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'node:http';
 import {
   ActivityType,
   Client,
@@ -11,6 +12,8 @@ import { handleTicketInteraction } from './core/tickets.js';
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
 const enableMemberEvents = String(process.env.ENABLE_MEMBER_EVENTS).toLowerCase() === 'true';
+const port = Number(process.env.PORT || 3000);
+const startedAt = new Date();
 
 if (!token) {
   console.error('DISCORD_TOKEN não configurado. Copie .env.example para .env ou configure a variável no host.');
@@ -21,6 +24,35 @@ const intents = [GatewayIntentBits.Guilds];
 if (enableMemberEvents) intents.push(GatewayIntentBits.GuildMembers);
 
 const client = new Client({ intents });
+
+const healthServer = http.createServer((req, res) => {
+  const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+
+  if (path !== '/' && path !== '/health') {
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+    return;
+  }
+
+  const ready = client.isReady();
+  const body = {
+    ok: ready,
+    service: 'MiojoPlays Community Bot',
+    discord: ready ? 'online' : 'connecting',
+    uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
+    timestamp: new Date().toISOString(),
+  };
+
+  res.writeHead(ready ? 200 : 503, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(body));
+});
+
+healthServer.listen(port, '0.0.0.0', () => {
+  console.log(`Health server ativo na porta ${port}.`);
+});
 
 async function registerCommands() {
   if (!client.application) throw new Error('Aplicação Discord ainda não está disponível.');
@@ -90,6 +122,15 @@ if (enableMemberEvents) {
   });
 }
 
+async function shutdown(signal) {
+  console.log(`${signal} recebido. Encerrando com segurança...`);
+  healthServer.close();
+  client.destroy();
+  process.exit(0);
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
 process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));
 
