@@ -97,7 +97,7 @@ async function fetchChannelState() {
     slug: channel.slug || current.slug,
     broadcasterUserId: channel.broadcaster_user_id ?? current.broadcasterUserId ?? null,
     title: stream?.title || channel.stream_title || 'MiojoPlays está ao vivo!',
-    category: stream?.category?.name || stream?.category?.slug || 'Live',
+    category: stream?.category?.name || channel.category?.name || channel.category?.slug || 'Live',
     viewerCount: Number(stream?.viewer_count || 0),
     thumbnail: stream?.thumbnail || channel.thumbnail || null,
     startedAt: stream?.start_time || stream?.started_at || null,
@@ -115,12 +115,45 @@ function liveRole(guild) {
   return guild.roles.cache.find((role) => role.name === '🔴・Lives');
 }
 
+function sameLiveSession(embed, state, url) {
+  if (!embed || embed.url !== url) return false;
+  if (!state.startedAt) {
+    const timestamp = embed.timestamp ? new Date(embed.timestamp).getTime() : 0;
+    return timestamp > Date.now() - 6 * 60 * 60_000;
+  }
+
+  const expected = new Date(state.startedAt).getTime();
+  const actual = embed.timestamp ? new Date(embed.timestamp).getTime() : Number.NaN;
+  if (!Number.isFinite(expected) || !Number.isFinite(actual)) return false;
+  return Math.abs(expected - actual) <= 120_000;
+}
+
+async function alreadyAnnounced(channel, state, url) {
+  const recent = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+  if (!recent) return false;
+  return recent.some((message) =>
+    message.author.id === channel.guild.members.me?.id &&
+    message.embeds.some((embed) => sameLiveSession(embed, state, url)),
+  );
+}
+
+function setLivePresence(client, state) {
+  client.user?.setActivity(`🔴 AO VIVO • ${state.title}`.slice(0, 120), { type: ActivityType.Watching });
+}
+
 async function announceLive(client, guild, state) {
   const channel = liveChannel(guild);
-  if (!channel) return;
+  if (!channel) return false;
 
   const role = liveRole(guild);
   const url = `https://kick.com/${encodeURIComponent(state.slug)}`;
+
+  // Impede anúncio duplicado mesmo se o Render reiniciar durante a mesma transmissão.
+  if (await alreadyAnnounced(channel, state, url)) {
+    setLivePresence(client, state);
+    return false;
+  }
+
   const description = [
     characterLine('live'),
     '',
@@ -157,7 +190,8 @@ async function announceLive(client, guild, state) {
     allowedMentions: role ? { roles: [role.id] } : { parse: [] },
   });
 
-  client.user?.setActivity(`AO VIVO • ${state.title}`.slice(0, 120), { type: ActivityType.Streaming, url });
+  setLivePresence(client, state);
+  return true;
 }
 
 function restorePresence(client) {
@@ -172,7 +206,8 @@ async function poll(client) {
     const wasLive = Boolean(lastState?.isLive);
     const nowLive = Boolean(state.isLive);
 
-    if (!wasLive && nowLive) {
+    // Na primeira consulta após um restart, também verifica se a live atual já foi anunciada.
+    if (nowLive && (!wasLive || !lastState)) {
       for (const guild of client.guilds.cache.values()) {
         await guild.channels.fetch().catch(() => {});
         await guild.roles.fetch().catch(() => {});
@@ -182,6 +217,8 @@ async function poll(client) {
       }
     } else if (wasLive && !nowLive) {
       restorePresence(client);
+    } else if (nowLive) {
+      setLivePresence(client, state);
     }
 
     lastState = state;
