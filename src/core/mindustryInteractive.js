@@ -1,11 +1,13 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { characterEmbed, CHARACTER } from './character.js';
+import { DATA_CHANNEL_NAME, getProfile, mutateProfile } from './communityStore.js';
 
 const PAIR_TTL_MS = 10 * 60 * 1000;
-const ONLINE_TTL_MS = 15 * 1000;
+const ONLINE_TTL_MS = 30 * 1000;
 const MAX_QUEUE = 20;
 const MAX_BODY = 16 * 1024;
+const TOKEN_PREFIX = 'mio1';
 
 const pairingCodes = new Map();
 const sessions = new Map();
@@ -78,7 +80,79 @@ function bearer(req) {
   return value.startsWith('Bearer ') ? value.slice(7).trim() : '';
 }
 
-export async function handleMindustryHttp(req, res) {
+function tokenHash(token) {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function safeHashEqual(left, right) {
+  if (!/^[a-f0-9]{64}$/i.test(left || '') || !/^[a-f0-9]{64}$/i.test(right || '')) return false;
+  const a = Buffer.from(left, 'hex');
+  const b = Buffer.from(right, 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function createPersistentToken(guildId, ownerId) {
+  const secret = randomBytes(32).toString('base64url');
+  return `${TOKEN_PREFIX}.${guildId}.${ownerId}.${secret}`;
+}
+
+function parsePersistentToken(token) {
+  const match = new RegExp(`^${TOKEN_PREFIX}\\.(\\d{15,22})\\.(\\d{15,22})\\.([A-Za-z0-9_-]{40,80})$`).exec(token || '');
+  if (!match) return null;
+  return { guildId: match[1], ownerId: match[2] };
+}
+
+async function resolveGuild(client, guildId) {
+  if (!client?.guilds) return null;
+  return client.guilds.cache.get(guildId) ?? client.guilds.fetch(guildId).catch(() => null);
+}
+
+function hasPersistenceChannel(guild) {
+  return guild.channels.cache.some(
+    (channel) => channel.name === DATA_CHANNEL_NAME && channel.isTextBased(),
+  );
+}
+
+function createRuntimeSession({ guildId, ownerId, linkedAt = Date.now() }) {
+  return {
+    guildId,
+    ownerId,
+    linkedAt,
+    lastSeenAt: Date.now(),
+    interactionsOpen: false,
+    queue: [],
+  };
+}
+
+function replaceRuntimeSession(token, session) {
+  for (const [existingToken, existing] of sessions) {
+    if (existing.guildId === session.guildId && existing.ownerId === session.ownerId && existingToken !== token) {
+      sessions.delete(existingToken);
+    }
+  }
+  sessions.set(token, session);
+  return session;
+}
+
+async function restorePersistentSession(client, token) {
+  const parsed = parsePersistentToken(token);
+  if (!parsed) return null;
+
+  const guild = await resolveGuild(client, parsed.guildId);
+  if (!guild || guild.ownerId !== parsed.ownerId) return null;
+
+  const profile = await getProfile(guild, parsed.ownerId);
+  if (!safeHashEqual(profile.mindustryLinkHash, tokenHash(token))) return null;
+
+  const linkedAt = Math.max(0, Number(profile.mindustryLinkedAt) || 0) || Date.now();
+  return replaceRuntimeSession(token, createRuntimeSession({
+    guildId: parsed.guildId,
+    ownerId: parsed.ownerId,
+    linkedAt,
+  }));
+}
+
+export async function handleMindustryHttp(req, res, client = null) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   if (!url.pathname.startsWith('/mindustry/')) return false;
 
@@ -93,20 +167,32 @@ export async function handleMindustryHttp(req, res) {
         return true;
       }
 
-      pairingCodes.delete(code);
-      for (const [token, session] of sessions) {
-        if (session.guildId === pair.guildId && session.ownerId === pair.ownerId) sessions.delete(token);
+      const guild = await resolveGuild(client, pair.guildId);
+      if (!guild || guild.ownerId !== pair.ownerId) {
+        json(res, 409, { ok: false, error: 'guild_owner_mismatch' });
+        return true;
       }
 
-      const token = randomBytes(32).toString('base64url');
-      sessions.set(token, {
+      await guild.channels.fetch().catch(() => {});
+      if (!hasPersistenceChannel(guild)) {
+        json(res, 503, { ok: false, error: 'persistence_unavailable' });
+        return true;
+      }
+
+      const token = createPersistentToken(pair.guildId, pair.ownerId);
+      const linkedAt = Date.now();
+      await mutateProfile(guild, pair.ownerId, (profile) => {
+        profile.mindustryLinkHash = tokenHash(token);
+        profile.mindustryLinkedAt = linkedAt;
+      }, { immediate: true });
+
+      pairingCodes.delete(code);
+      replaceRuntimeSession(token, createRuntimeSession({
         guildId: pair.guildId,
         ownerId: pair.ownerId,
-        linkedAt: Date.now(),
-        lastSeenAt: Date.now(),
-        interactionsOpen: false,
-        queue: [],
-      });
+        linkedAt,
+      }));
+
       json(res, 200, { ok: true, token, pollAfterMs: 1500 });
       return true;
     } catch (error) {
@@ -117,7 +203,9 @@ export async function handleMindustryHttp(req, res) {
 
   if (url.pathname === '/mindustry/pull' && req.method === 'GET') {
     const token = bearer(req);
-    const session = sessions.get(token);
+    let session = sessions.get(token);
+    if (!session) session = await restorePersistentSession(client, token);
+
     if (!session) {
       json(res, 401, { ok: false, error: 'unauthorized' });
       return true;
@@ -164,7 +252,7 @@ export async function handleMindustryCommand(interaction) {
           `🎛️ **Interações:** ${session?.interactionsOpen ? '🟢 abertas' : '🔒 fechadas'}`,
           '',
           session
-            ? 'O mod está falando com o bot por HTTPS.'
+            ? 'O mod está falando com o bot por HTTPS e pode se reconectar após reinícios.'
             : 'O dono usa `/mindustry vincular` e digita o código dentro do mod.',
         ].join('\n'),
         color: session ? CHARACTER.palette.success : CHARACTER.palette.warning,
@@ -190,7 +278,7 @@ export async function handleMindustryCommand(interaction) {
     });
 
     await interaction.reply({
-      content: `🎮 Código privado do **MiojoPlays Interactive**: **${code}**\n\nAbra o Mindustry com o mod instalado e digite esse código quando ele pedir. Expira em 10 minutos.`,
+      content: `🎮 Código privado do **MiojoPlays Interactive**: **${code}**\n\nAbra o Mindustry com o mod instalado e digite esse código quando ele pedir. Expira em 10 minutos. Depois do vínculo, o mod poderá se reconectar sozinho após reinícios do bot.`,
       flags: MessageFlags.Ephemeral,
     });
     return true;
