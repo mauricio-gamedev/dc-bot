@@ -68,7 +68,7 @@ attachLogging(client);
 
 const healthServer = http.createServer(async (req, res) => {
   try {
-    if (await handleMindustryHttp(req, res)) return;
+    if (await handleMindustryHttp(req, res, client)) return;
 
     const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
 
