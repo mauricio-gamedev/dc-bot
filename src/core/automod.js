@@ -10,7 +10,7 @@ export const AUTOMOD_RULE_NAMES = [
   '🛡️ Miojo • Anti-raid de menções',
 ];
 
-function alertActions(modLogChannel, customMessage) {
+function alertActions(modLogChannel, customMessage, { timeoutSeconds = 0 } = {}) {
   const actions = [
     {
       type: AutoModerationActionType.BlockMessage,
@@ -24,6 +24,14 @@ function alertActions(modLogChannel, customMessage) {
       metadata: { channel: modLogChannel.id },
     });
   }
+
+  if (timeoutSeconds > 0) {
+    actions.push({
+      type: AutoModerationActionType.Timeout,
+      metadata: { durationSeconds: timeoutSeconds },
+    });
+  }
+
   return actions;
 }
 
@@ -47,12 +55,13 @@ export async function ensureAutoMod(guild, modLogChannel, report) {
         name: AUTOMOD_RULE_NAMES[1],
         triggerType: AutoModerationRuleTriggerType.MentionSpam,
         triggerMetadata: {
-          mentionTotalLimit: 5,
+          mentionTotalLimit: 4,
           mentionRaidProtectionEnabled: true,
         },
         actions: alertActions(
           modLogChannel,
-          'Muitas menções de uma vez. Diminua o ritmo.',
+          'Muitas menções de uma vez. A proteção anti-raid foi acionada.',
+          { timeoutSeconds: 600 },
         ),
       },
     ];
