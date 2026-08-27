@@ -14,8 +14,18 @@ const sessions = new Map();
 
 const ACTIONS = Object.freeze({
   wave: { label: '🌊 Próxima wave', action: 'wave_next' },
+  horde: { label: '👹 Horda: +3 waves', action: 'wave_horde' },
   copper: { label: '🟠 +100 cobre', action: 'copper_100' },
+  lead: { label: '⚙️ +100 chumbo', action: 'lead_100' },
+  graphite: { label: '⬛ +75 grafite', action: 'graphite_75' },
+  silicon: { label: '🔷 +75 silício', action: 'silicon_75' },
+  titanium: { label: '🔹 +50 titânio', action: 'titanium_50' },
+  thorium: { label: '🟣 +30 tório', action: 'thorium_30' },
   heal: { label: '💚 Curar núcleo', action: 'heal_core' },
+  boost: { label: '⚡ Boost do jogador', action: 'player_boost' },
+  slow: { label: '🐌 Lentidão no jogador', action: 'player_slow' },
+  freeze: { label: '❄️ Congelar jogador', action: 'player_freeze' },
+  burn: { label: '🔥 Incendiar jogador', action: 'player_burn' },
 });
 
 const actionChoices = Object.entries(ACTIONS).map(([value, data]) => ({ name: data.label, value }));
