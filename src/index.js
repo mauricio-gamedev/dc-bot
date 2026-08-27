@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import {
   ActivityType,
   Client,
@@ -65,6 +66,43 @@ const registeredCommandData = [
   kickInteractiveCommandData,
 ];
 
+const officialAssets = new Map([
+  ['mio-character.webp', { file: 'assets/mio-character.webp', contentType: 'image/webp' }],
+  ['miojo-seal-static.png', { file: 'assets/miojo-seal-static.png', contentType: 'image/png' }],
+  ['miojo-seal-animated.gif', { file: 'assets/miojo-seal-animated.gif', contentType: 'image/gif' }],
+]);
+
+async function serveOfficialAsset(req, res, pathname) {
+  if (!pathname.startsWith('/assets/')) return false;
+
+  const filename = pathname.slice('/assets/'.length);
+  const asset = officialAssets.get(filename);
+  if (!asset) {
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: false, error: 'asset_not_found' }));
+    return true;
+  }
+
+  if (!['GET', 'HEAD'].includes(req.method || 'GET')) {
+    res.writeHead(405, {
+      allow: 'GET, HEAD',
+      'content-type': 'application/json; charset=utf-8',
+    });
+    res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
+    return true;
+  }
+
+  const data = await readFile(asset.file);
+  res.writeHead(200, {
+    'content-type': asset.contentType,
+    'content-length': data.length,
+    'cache-control': 'public, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(req.method === 'HEAD' ? undefined : data);
+  return true;
+}
+
 if (!token) {
   console.error('DISCORD_TOKEN não configurado. Copie .env.example para .env ou configure a variável no host.');
   process.exit(1);
@@ -86,6 +124,8 @@ const healthServer = http.createServer(async (req, res) => {
     if (await handleMindustryHttp(req, res, client)) return;
 
     const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+
+    if (await serveOfficialAsset(req, res, path)) return;
 
     if (path !== '/' && path !== '/health') {
       res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });

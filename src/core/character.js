@@ -1,7 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
-const RAW_BASE = 'https://raw.githubusercontent.com/mauricio-gamedev/dc-bot/main/assets';
+const OFFICIAL_ASSET_BASE = 'https://dc-bot-us5v.onrender.com/assets';
 const ASSET_VERSIONS = Object.freeze({
   character: 'a11b18ed09704b11de301704edb572c778b58df9',
   badgeStatic: '6c10d3f430be1fb31b1862521b56b9b69d80a81d',
@@ -9,7 +9,7 @@ const ASSET_VERSIONS = Object.freeze({
 });
 
 function officialAsset(filename, version) {
-  return `${RAW_BASE}/${filename}?v=${version}`;
+  return `${OFFICIAL_ASSET_BASE}/${filename}?v=${version}`;
 }
 
 const DEFAULT_CHARACTER_ASSET = officialAsset('mio-character.webp', ASSET_VERSIONS.character);
