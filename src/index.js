@@ -25,6 +25,12 @@ import {
   stopMinecraftBridge,
 } from './core/minecraftInteractive.js';
 import {
+  handleMindustryCommand,
+  handleMindustryHttp,
+  mindustryCommandData,
+  mindustryStatus,
+} from './core/mindustryInteractive.js';
+import {
   handleKickLiveButton,
   kickLiveStatus,
   startKickLiveWatcher,
@@ -42,6 +48,7 @@ const registeredCommandData = [
   eventCommandBuilder.toJSON(),
   ...sealCommandData,
   minecraftCommandData,
+  mindustryCommandData,
 ];
 
 if (!token) {
@@ -59,47 +66,66 @@ if (enableMemberEvents) intents.push(GatewayIntentBits.GuildMembers);
 const client = new Client({ intents });
 attachLogging(client);
 
-const healthServer = http.createServer((req, res) => {
-  const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+const healthServer = http.createServer(async (req, res) => {
+  try {
+    if (await handleMindustryHttp(req, res)) return;
 
-  if (path !== '/' && path !== '/health') {
-    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: false, error: 'not_found' }));
-    return;
+    const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+
+    if (path !== '/' && path !== '/health') {
+      res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+      return;
+    }
+
+    const ready = client.isReady();
+    const kick = kickLiveStatus();
+    const minecraft = minecraftBridgeStatus();
+    const mindustry = mindustryStatus(guildId);
+    const body = {
+      ok: ready,
+      service: 'MiojoPlays Community Bot',
+      version: '0.6.0',
+      character: CHARACTER.name,
+      discord: ready ? 'online' : 'connecting',
+      kickLive: {
+        enabled: kick.enabled,
+        configured: kick.configured,
+        polling: kick.polling,
+        live: Boolean(kick.lastState?.isLive),
+        slug: kick.slug,
+        sessionKey: kick.sessionKey,
+      },
+      minecraftInteractive: {
+        bridge: minecraft.attached,
+        connected: minecraft.connected,
+        interactionsOpen: minecraft.interactionsOpen,
+        connectedAt: minecraft.connectedAt,
+      },
+      mindustryInteractive: {
+        connected: mindustry.connected,
+        interactionsOpen: mindustry.interactionsOpen,
+        linkedAt: mindustry.linkedAt,
+        lastSeenAt: mindustry.lastSeenAt,
+      },
+      uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
+      timestamp: new Date().toISOString(),
+    };
+
+    res.writeHead(ready ? 200 : 503, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    res.end(JSON.stringify(body));
+  } catch (error) {
+    console.error('Falha no servidor HTTP:', error);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+    } else {
+      res.end();
+    }
   }
-
-  const ready = client.isReady();
-  const kick = kickLiveStatus();
-  const minecraft = minecraftBridgeStatus();
-  const body = {
-    ok: ready,
-    service: 'MiojoPlays Community Bot',
-    version: '0.5.0',
-    character: CHARACTER.name,
-    discord: ready ? 'online' : 'connecting',
-    kickLive: {
-      enabled: kick.enabled,
-      configured: kick.configured,
-      polling: kick.polling,
-      live: Boolean(kick.lastState?.isLive),
-      slug: kick.slug,
-      sessionKey: kick.sessionKey,
-    },
-    minecraftInteractive: {
-      bridge: minecraft.attached,
-      connected: minecraft.connected,
-      interactionsOpen: minecraft.interactionsOpen,
-      connectedAt: minecraft.connectedAt,
-    },
-    uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
-    timestamp: new Date().toISOString(),
-  };
-
-  res.writeHead(ready ? 200 : 503, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
 });
 
 attachMinecraftBridge(healthServer);
@@ -153,6 +179,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
+    if (await handleMindustryCommand(interaction)) return;
     if (await handleMinecraftCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
     if (await handleTicketInteraction(interaction)) return;
