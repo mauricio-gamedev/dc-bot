@@ -50,6 +50,9 @@ import {
   kickInteractiveStatus,
 } from './core/kickInteractive.js';
 
+const packageMetadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const appVersion = String(packageMetadata.version || '0.0.0');
+const deployCommit = String(process.env.RENDER_GIT_COMMIT || '').trim() || null;
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
 const enableMemberEvents = String(process.env.ENABLE_MEMBER_EVENTS).toLowerCase() === 'true';
@@ -67,9 +70,9 @@ const registeredCommandData = [
 ];
 
 const officialAssets = new Map([
-  ['mio-character.webp', { file: 'assets/mio-character.webp', contentType: 'image/webp' }],
-  ['miojo-seal-static.png', { file: 'assets/miojo-seal-static.png', contentType: 'image/png' }],
-  ['miojo-seal-animated.gif', { file: 'assets/miojo-seal-animated.gif', contentType: 'image/gif' }],
+  ['mio-character.webp', { file: new URL('../assets/mio-character.webp', import.meta.url), contentType: 'image/webp' }],
+  ['miojo-seal-static.png', { file: new URL('../assets/miojo-seal-static.png', import.meta.url), contentType: 'image/png' }],
+  ['miojo-seal-animated.gif', { file: new URL('../assets/miojo-seal-animated.gif', import.meta.url), contentType: 'image/gif' }],
 ]);
 
 async function serveOfficialAsset(req, res, pathname) {
@@ -142,7 +145,8 @@ const healthServer = http.createServer(async (req, res) => {
     const body = {
       ok: ready,
       service: 'MiojoPlays Community Bot',
-      version: '0.8.0',
+      version: appVersion,
+      deployCommit,
       character: CHARACTER.name,
       discord: ready ? 'online' : 'connecting',
       kickLive: {
