@@ -65,21 +65,38 @@ async function syncGroup(guild, member, targetName, managedNames, reason) {
   const target = targetName ? roles.get(targetName) : null;
   const current = member.roles.cache.filter((role) => managedNames.has(role.name));
   const toRemove = current.filter((role) => !target || role.id !== target.id);
+  const blocked = toRemove.filter((role) => !role.editable);
+  const removable = toRemove.filter((role) => role.editable);
 
-  if (toRemove.size) {
-    const removable = toRemove.filter((role) => role.editable);
-    if (removable.size) await member.roles.remove([...removable.values()], reason);
+  if (removable.size) {
+    await member.roles.remove([...removable.values()], reason);
   }
 
   if (target && !member.roles.cache.has(target.id)) {
-    if (!target.editable) return { ok: false, reason: 'role_hierarchy' };
+    if (!target.editable) {
+      return {
+        ok: false,
+        reason: 'role_hierarchy',
+        target: target.name,
+        blocked: [...blocked.values()].map((role) => role.name),
+      };
+    }
     await member.roles.add(target, reason);
+  }
+
+  if (blocked.size) {
+    return {
+      ok: false,
+      reason: 'role_hierarchy',
+      target: target?.name ?? null,
+      blocked: [...blocked.values()].map((role) => role.name),
+    };
   }
 
   return {
     ok: true,
     target: target?.name ?? null,
-    removed: [...toRemove.values()].map((role) => role.name),
+    removed: [...removable.values()].map((role) => role.name),
   };
 }
 
@@ -128,6 +145,7 @@ export async function reconcileAllIdentityRoles(guild, { limit = 250 } = {}) {
   const profiles = (await getAllProfiles(guild)).slice(0, limit);
   let synced = 0;
   let skipped = 0;
+  let hierarchyBlocked = 0;
 
   for (const profile of profiles) {
     try {
@@ -136,7 +154,12 @@ export async function reconcileAllIdentityRoles(guild, { limit = 250 } = {}) {
         skipped += 1;
         continue;
       }
-      await reconcileIdentityRoles(guild, profile.userId, profile);
+      const result = await reconcileIdentityRoles(guild, profile.userId, profile);
+      if (!result.title.ok || !result.seal.ok) {
+        hierarchyBlocked += 1;
+        skipped += 1;
+        continue;
+      }
       synced += 1;
     } catch (error) {
       skipped += 1;
@@ -144,5 +167,5 @@ export async function reconcileAllIdentityRoles(guild, { limit = 250 } = {}) {
     }
   }
 
-  return { total: profiles.length, synced, skipped };
+  return { total: profiles.length, synced, skipped, hierarchyBlocked };
 }
