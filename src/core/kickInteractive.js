@@ -47,19 +47,50 @@ const accessTokens = new Map();
 const seenMessages = new Map();
 const userCooldowns = new Map();
 const globalCooldowns = new Map();
+const actionCooldowns = new Map();
 const runtimeByGuild = new Map();
 
 const CHAT_COMMANDS = Object.freeze({
   '!wave': 'wave',
+  '!horda': 'horde',
   '!cobre': 'copper',
+  '!chumbo': 'lead',
+  '!grafite': 'graphite',
+  '!silicio': 'silicon',
+  '!silício': 'silicon',
+  '!titanio': 'titanium',
+  '!titânio': 'titanium',
+  '!torio': 'thorium',
+  '!tório': 'thorium',
   '!cura': 'heal',
+  '!boost': 'boost',
+  '!lento': 'slow',
+  '!gelo': 'freeze',
+  '!fogo': 'burn',
 });
+
+const ACTION_COOLDOWNS_MS = Object.freeze({
+  horde: 45_000,
+  boost: 20_000,
+  slow: 15_000,
+  freeze: 15_000,
+  burn: 15_000,
+});
+
+const COMMAND_PANEL = [
+  '🎮 MIOJOPLAYS INTERACTIVE',
+  '⚔️ !wave !horda !lento !gelo !fogo !boost',
+  '📦 !cobre !chumbo !grafite !silicio !titanio !torio',
+  '💚 !cura',
+  'ℹ️ !comandos / !help • 1 ação por pessoa a cada 20s',
+].join(' | ');
 
 export const kickInteractiveCommandBuilder = new SlashCommandBuilder()
   .setName('kickbot')
   .setDescription('Configura os comandos interativos do chat da Kick.')
   .addSubcommand((sub) => sub.setName('status').setDescription('Mostra o estado da integração Kick → Mindustry.'))
   .addSubcommand((sub) => sub.setName('vincular').setDescription('Autoriza sua conta Kick para chat e webhooks.'))
+  .addSubcommand((sub) => sub.setName('comandos').setDescription('Publica o painel de comandos no chat da Kick para você fixar.'))
   .addSubcommand((sub) => sub.setName('desvincular').setDescription('Remove a autorização da Kick salva pelo bot.'));
 
 export const kickInteractiveCommandData = kickInteractiveCommandBuilder.toJSON();
@@ -111,6 +142,9 @@ function cleanupMaps(now = Date.now()) {
   }
   for (const [key, lastAt] of userCooldowns) {
     if (now - lastAt > USER_COOLDOWN_MS * 3) userCooldowns.delete(key);
+  }
+  for (const [key, lastAt] of actionCooldowns) {
+    if (now - lastAt > 2 * 60 * 1000) actionCooldowns.delete(key);
   }
 }
 
@@ -403,12 +437,12 @@ function verifyWebhook(req, raw) {
 
 function parseChatCommand(content) {
   const command = String(content || '').trim().toLowerCase().split(/\s+/)[0] || '';
-  if (command === '!comandos') return { kind: 'help', command };
+  if (command === '!comandos' || command === '!help') return { kind: 'help', command };
   const actionId = CHAT_COMMANDS[command];
   return actionId ? { kind: 'action', command, actionId } : null;
 }
 
-async function processChatEvent(client, body, messageId) {
+async function processChatEvent(client, body) {
   const current = config();
   const guild = await resolveGuild(client);
   if (!guild) throw new Error('Servidor Discord alvo não encontrado.');
@@ -426,12 +460,13 @@ async function processChatEvent(client, body, messageId) {
 
   const senderId = String(body?.sender?.user_id || 'anonymous');
   const senderName = String(body?.sender?.username || 'viewer').slice(0, 80);
+  const replyMessageId = String(body?.message_id || '').trim() || null;
   state.lastCommandAt = new Date().toISOString();
   state.lastCommand = parsed.command;
   state.lastSender = senderName;
 
   if (parsed.kind === 'help') {
-    sendChatMessage(guild, '🎮 Interactive: !wave • !cobre • !cura — 1 ação por pessoa a cada 20s.', messageId)
+    sendChatMessage(guild, COMMAND_PANEL, replyMessageId)
       .catch((error) => {
         state.lastError = error.message;
         console.error('Kick Interactive chat reply:', error.message);
@@ -443,18 +478,25 @@ async function processChatEvent(client, body, messageId) {
   const userKey = `${guild.id}:${senderId}`;
   const userLast = userCooldowns.get(userKey) || 0;
   if (now - userLast < USER_COOLDOWN_MS) return;
+
   const globalLast = globalCooldowns.get(guild.id) || 0;
   if (now - globalLast < GLOBAL_COOLDOWN_MS) return;
+
+  const actionCooldown = ACTION_COOLDOWNS_MS[parsed.actionId] || 0;
+  const actionKey = `${guild.id}:${parsed.actionId}`;
+  const actionLast = actionCooldowns.get(actionKey) || 0;
+  if (actionCooldown > 0 && now - actionLast < actionCooldown) return;
 
   const result = enqueueMindustryAction(guild.id, parsed.actionId, senderName);
   if (!result.ok) return;
 
   userCooldowns.set(userKey, now);
   globalCooldowns.set(guild.id, now);
+  if (actionCooldown > 0) actionCooldowns.set(actionKey, now);
   state.lastError = null;
 
   if (current.replyActions) {
-    sendChatMessage(guild, `${result.label} • @${senderName} enviou uma ação para o jogo ✅`, messageId)
+    sendChatMessage(guild, `${result.label} • @${senderName} enviou uma ação para o jogo ✅`, replyMessageId)
       .catch((error) => {
         state.lastError = error.message;
         console.error('Kick Interactive action reply:', error.message);
@@ -558,7 +600,7 @@ async function handleWebhook(req, res, client) {
 
   res.writeHead(204);
   res.end();
-  processChatEvent(client, body, verified.messageId).catch((error) => {
+  processChatEvent(client, body).catch((error) => {
     const guildId = config().guildId;
     if (guildId) runtime(guildId).lastError = error.message;
     console.error('Kick Interactive webhook:', error.message);
@@ -647,7 +689,7 @@ export async function handleKickInteractiveCommand(interaction) {
           `📡 **Webhook:** ${state.lastWebhookAt ? '🟢 recebendo eventos' : state.subscribed ? '🟡 inscrito, aguardando evento' : '⚪ sem evento recebido'}`,
           `🎮 **Mindustry:** ${mindustry.connected ? '🟢 conectado' : '🔴 desconectado'} • ${mindustry.interactionsOpen ? 'interações abertas' : 'interações fechadas'}`,
           '',
-          '**Chat:** `!wave` • `!cobre` • `!cura` • `!comandos`',
+          '**Chat:** `!wave` `!horda` `!cobre` `!chumbo` `!grafite` `!silicio` `!titanio` `!torio` `!cura` `!boost` `!lento` `!gelo` `!fogo` `!comandos`',
           state.lastCommandAt ? `🧪 Último comando: **${state.lastCommand}** por **${state.lastSender}**` : null,
           state.lastError ? `⚠️ Último erro: ${state.lastError.slice(0, 250)}` : null,
         ].filter(Boolean).join('\n'),
@@ -689,6 +731,25 @@ export async function handleKickInteractiveCommand(interaction) {
       components: [row],
       flags: MessageFlags.Ephemeral,
     });
+    return true;
+  }
+
+  if (sub === 'comandos') {
+    try {
+      const profile = await getProfile(guild, guild.ownerId);
+      if (!profile.kickOAuthRefreshEncrypted) {
+        await interaction.reply({ content: '❌ A Kick ainda não está vinculada. Use `/kickbot vincular` primeiro.', flags: MessageFlags.Ephemeral });
+        return true;
+      }
+      await sendChatMessage(guild, COMMAND_PANEL);
+      await interaction.reply({
+        content: '📌 Painel de comandos enviado para o chat da Kick. Agora é só usar **Fixar mensagem** na própria Kick; a API pública ainda não oferece pin automático.',
+        flags: MessageFlags.Ephemeral,
+      });
+    } catch (error) {
+      runtime(guild.id).lastError = error.message;
+      await interaction.reply({ content: `❌ Não consegui publicar o painel: ${error.message.slice(0, 250)}`, flags: MessageFlags.Ephemeral });
+    }
     return true;
   }
 
