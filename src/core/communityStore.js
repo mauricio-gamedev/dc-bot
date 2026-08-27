@@ -29,6 +29,8 @@ function defaultProfile(userId) {
     eventParticipationIds: [],
     ownedSeals: [],
     equippedSeal: '',
+    mindustryLinkHash: '',
+    mindustryLinkedAt: 0,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -46,7 +48,7 @@ function normalizeProfile(userId, raw = {}) {
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
     'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'liveAttendanceCount',
-    'eventParticipationCount', 'createdAt', 'updatedAt',
+    'eventParticipationCount', 'mindustryLinkedAt', 'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
     data[key] = Number.isFinite(value) ? value : base[key];
@@ -54,6 +56,7 @@ function normalizeProfile(userId, raw = {}) {
 
   data.liveAttendanceCount = Math.max(0, Math.floor(data.liveAttendanceCount));
   data.eventParticipationCount = Math.max(0, Math.floor(data.eventParticipationCount));
+  data.mindustryLinkedAt = Math.max(0, Math.floor(data.mindustryLinkedAt));
   data.title = typeof data.title === 'string' && data.title.length <= 80 ? data.title : base.title;
   data.ownedTitles = normalizeStringArray(data.ownedTitles);
   data.achievements = normalizeStringArray(data.achievements);
@@ -64,6 +67,9 @@ function normalizeProfile(userId, raw = {}) {
   data.ownedSeals = normalizeStringArray(data.ownedSeals).slice(-50);
   data.equippedSeal = typeof data.equippedSeal === 'string' && data.equippedSeal.length <= 80
     ? data.equippedSeal
+    : '';
+  data.mindustryLinkHash = typeof data.mindustryLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.mindustryLinkHash)
+    ? data.mindustryLinkHash.toLowerCase()
     : '';
   data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
   data.missionDaily = Boolean(data.missionDaily);
@@ -173,6 +179,8 @@ function serializeProfile(profile) {
     eventParticipationIds: profile.eventParticipationIds,
     ownedSeals: profile.ownedSeals,
     equippedSeal: profile.equippedSeal,
+    mindustryLinkHash: profile.mindustryLinkHash,
+    mindustryLinkedAt: profile.mindustryLinkedAt,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
