@@ -1,6 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { getProfile, mutateProfile } from './communityStore.js';
 import { characterEmbed, CHARACTER } from './character.js';
+import { syncSealDisplayRole } from './identityDisplay.js';
 
 export const SEALS = Object.freeze({
   founder: {
@@ -123,8 +124,13 @@ export async function resolveProfileSeal(guild, userId) {
     }, { immediate: true });
   }
 
+  const normalizedProfile = await getProfile(guild, userId);
+  await syncSealDisplayRole(guild, userId, normalizedProfile).catch((error) => {
+    console.warn(`Seal display sync ${userId}: ${error.message}`);
+  });
+
   return {
-    profile,
+    profile: normalizedProfile,
     member,
     availableIds,
     equippedId,
@@ -161,7 +167,7 @@ export async function handleSealCommand(interaction) {
           '',
           sealsDescription(state.availableIds, state.equippedId),
           '',
-          'Use `/selo equipar` para escolher qual aparece no seu perfil.',
+          'Use `/selo equipar` para escolher qual aparece no seu perfil e como cargo cosmético.',
         ].join('\n'),
         color: CHARACTER.palette.accent,
         presentation: state.equipped ? 'badge' : 'compact',
@@ -182,12 +188,13 @@ export async function handleSealCommand(interaction) {
       return true;
     }
 
-    await mutateProfile(interaction.guild, interaction.user.id, (profile) => {
-      profile.equippedSeal = '';
+    const profile = await mutateProfile(interaction.guild, interaction.user.id, (data) => {
+      data.equippedSeal = '';
     }, { immediate: true });
+    await syncSealDisplayRole(interaction.guild, interaction.user.id, profile).catch(() => {});
 
     await interaction.reply({
-      content: '✅ Selo removido do seu perfil.',
+      content: '✅ Selo removido do seu perfil e do cargo cosmético.',
       flags: MessageFlags.Ephemeral,
     });
     return true;
@@ -204,14 +211,23 @@ export async function handleSealCommand(interaction) {
       return true;
     }
 
-    await mutateProfile(interaction.guild, interaction.user.id, (profile) => {
-      profile.equippedSeal = sealId;
+    const profile = await mutateProfile(interaction.guild, interaction.user.id, (data) => {
+      data.equippedSeal = sealId;
     }, { immediate: true });
+    const roleSync = await syncSealDisplayRole(interaction.guild, interaction.user.id, profile)
+      .catch((error) => ({ ok: false, reason: error.message }));
 
     await interaction.reply({
       embeds: [characterEmbed({
         title: '✅ Selo equipado',
-        description: `${seal.label}\n\nAgora esse selo aparece no seu perfil MiojoPlays.`,
+        description: [
+          seal.label,
+          '',
+          'Agora esse selo aparece no seu perfil MiojoPlays.',
+          roleSync.ok
+            ? '✨ O cargo cosmético visível também foi sincronizado.'
+            : '⚠️ O selo foi salvo, mas o cargo visual depende da hierarquia do bot no servidor.',
+        ].join('\n'),
         color: CHARACTER.palette.accent,
         presentation: 'badge',
         seal: 'animated',
