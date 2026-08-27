@@ -1,7 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
-const OFFICIAL_ASSET_BASE = 'https://dc-bot-us5v.onrender.com/assets';
+const OFFICIAL_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/mauricio-gamedev/dc-bot@a0836d6ef188f7ba15896e31293d2a51123981b3/assets';
 const ASSET_VERSIONS = Object.freeze({
   character: 'a11b18ed09704b11de301704edb572c778b58df9',
   badgeStatic: '6c10d3f430be1fb31b1862521b56b9b69d80a81d',
