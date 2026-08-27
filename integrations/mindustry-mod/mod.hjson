@@ -1,8 +1,8 @@
 name: "miojoplays-interactive"
 displayName: "[violet]MiojoPlays Interactive[]"
-author: "@astromg01"
+author: "MiojoPlays"
 main: "miojoplays.MiojoPlaysInteractiveMod"
 description: "Integra o Mindustry Android com o bot da comunidade MiojoPlays para interações seguras em tempo real."
-version: "0.1.0"
+version: "0.2.0"
 minGameVersion: "159.7"
 hidden: true

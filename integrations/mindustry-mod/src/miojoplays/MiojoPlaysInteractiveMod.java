@@ -7,8 +7,11 @@ import arc.util.Timer;
 import arc.util.serialization.Jval;
 import mindustry.Vars;
 import mindustry.content.Items;
+import mindustry.content.StatusEffects;
 import mindustry.game.EventType.ClientLoadEvent;
 import mindustry.mod.Mod;
+import mindustry.type.Item;
+import mindustry.type.StatusEffect;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -124,13 +127,18 @@ public class MiojoPlaysInteractiveMod extends Mod {
                     Vars.ui.showInfoToast("[violet]MiojoPlays[]: próxima wave enviada por " + by, 3f);
                 }
             }
-            case "copper_100" -> {
-                var core = Vars.player.team().core();
-                if (core != null) {
-                    core.items.add(Items.copper, 100);
-                    Vars.ui.showInfoToast("[orange]+100 cobre[] enviado por " + by, 3f);
+            case "wave_horde" -> {
+                if (Vars.state.rules.waves) {
+                    for (int i = 0; i < 3; i++) Vars.logic.runWave();
+                    Vars.ui.showInfoToast("[scarlet]HORDA: +3 waves[] enviada por " + by, 3f);
                 }
             }
+            case "copper_100" -> addItem(Items.copper, 100, "[orange]+100 cobre[]", by);
+            case "lead_100" -> addItem(Items.lead, 100, "[lightgray]+100 chumbo[]", by);
+            case "graphite_75" -> addItem(Items.graphite, 75, "[gray]+75 grafite[]", by);
+            case "silicon_75" -> addItem(Items.silicon, 75, "[sky]+75 silício[]", by);
+            case "titanium_50" -> addItem(Items.titanium, 50, "[blue]+50 titânio[]", by);
+            case "thorium_30" -> addItem(Items.thorium, 30, "[purple]+30 tório[]", by);
             case "heal_core" -> {
                 var core = Vars.player.team().core();
                 if (core != null) {
@@ -138,10 +146,28 @@ public class MiojoPlaysInteractiveMod extends Mod {
                     Vars.ui.showInfoToast("[green]Núcleo curado[] por " + by, 3f);
                 }
             }
+            case "player_boost" -> applyToPlayer(StatusEffects.overdrive, 8f, "[accent]BOOST[]", by);
+            case "player_slow" -> applyToPlayer(StatusEffects.slow, 6f, "[gray]LENTIDÃO[]", by);
+            case "player_freeze" -> applyToPlayer(StatusEffects.freezing, 5f, "[cyan]CONGELADO[]", by);
+            case "player_burn" -> applyToPlayer(StatusEffects.burning, 5f, "[orange]PEGANDO FOGO[]", by);
             default -> {
                 // Ações desconhecidas são ignoradas de propósito.
             }
         }
+    }
+
+    private void addItem(Item item, int amount, String label, String by) {
+        var core = Vars.player.team().core();
+        if (core == null) return;
+        core.items.add(item, amount);
+        Vars.ui.showInfoToast(label + " enviado por " + by, 3f);
+    }
+
+    private void applyToPlayer(StatusEffect effect, float seconds, String label, String by) {
+        var unit = Vars.player.unit();
+        if (unit == null || unit.dead()) return;
+        unit.apply(effect, seconds * 60f);
+        Vars.ui.showInfoToast(label + " por " + by, 3f);
     }
 
     private String request(String method, String path, String token, String body) throws Exception {
