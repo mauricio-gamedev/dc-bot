@@ -31,6 +31,10 @@ function defaultProfile(userId) {
     equippedSeal: '',
     mindustryLinkHash: '',
     mindustryLinkedAt: 0,
+    kickOAuthRefreshEncrypted: '',
+    kickOAuthScope: '',
+    kickOAuthLinkedAt: 0,
+    kickSubscriptionId: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -48,7 +52,7 @@ function normalizeProfile(userId, raw = {}) {
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
     'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'liveAttendanceCount',
-    'eventParticipationCount', 'mindustryLinkedAt', 'createdAt', 'updatedAt',
+    'eventParticipationCount', 'mindustryLinkedAt', 'kickOAuthLinkedAt', 'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
     data[key] = Number.isFinite(value) ? value : base[key];
@@ -57,6 +61,7 @@ function normalizeProfile(userId, raw = {}) {
   data.liveAttendanceCount = Math.max(0, Math.floor(data.liveAttendanceCount));
   data.eventParticipationCount = Math.max(0, Math.floor(data.eventParticipationCount));
   data.mindustryLinkedAt = Math.max(0, Math.floor(data.mindustryLinkedAt));
+  data.kickOAuthLinkedAt = Math.max(0, Math.floor(data.kickOAuthLinkedAt));
   data.title = typeof data.title === 'string' && data.title.length <= 80 ? data.title : base.title;
   data.ownedTitles = normalizeStringArray(data.ownedTitles);
   data.achievements = normalizeStringArray(data.achievements);
@@ -70,6 +75,15 @@ function normalizeProfile(userId, raw = {}) {
     : '';
   data.mindustryLinkHash = typeof data.mindustryLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.mindustryLinkHash)
     ? data.mindustryLinkHash.toLowerCase()
+    : '';
+  data.kickOAuthRefreshEncrypted = typeof data.kickOAuthRefreshEncrypted === 'string' && data.kickOAuthRefreshEncrypted.length <= 4096
+    ? data.kickOAuthRefreshEncrypted
+    : '';
+  data.kickOAuthScope = typeof data.kickOAuthScope === 'string' && data.kickOAuthScope.length <= 400
+    ? data.kickOAuthScope
+    : '';
+  data.kickSubscriptionId = typeof data.kickSubscriptionId === 'string' && data.kickSubscriptionId.length <= 160
+    ? data.kickSubscriptionId
     : '';
   data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
   data.missionDaily = Boolean(data.missionDaily);
@@ -181,6 +195,10 @@ function serializeProfile(profile) {
     equippedSeal: profile.equippedSeal,
     mindustryLinkHash: profile.mindustryLinkHash,
     mindustryLinkedAt: profile.mindustryLinkedAt,
+    kickOAuthRefreshEncrypted: profile.kickOAuthRefreshEncrypted,
+    kickOAuthScope: profile.kickOAuthScope,
+    kickOAuthLinkedAt: profile.kickOAuthLinkedAt,
+    kickSubscriptionId: profile.kickSubscriptionId,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
