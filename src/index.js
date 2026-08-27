@@ -17,6 +17,12 @@ import { ensureSelfRolePanel, handleV3Button } from './core/communityV3.js';
 import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.js';
 import { eventCommandBuilder, handleEventButton, handleEventCommand } from './core/eventAgenda.js';
 import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
+import { handleIdentityCommand, identityCommandData } from './core/identityCommands.js';
+import {
+  communityAutomationStatus,
+  startCommunityAutomation,
+  stopCommunityAutomation,
+} from './core/communityAutomation.js';
 import {
   attachMinecraftBridge,
   handleMinecraftCommand,
@@ -53,6 +59,7 @@ const registeredCommandData = [
   ownerCoinCommandData,
   eventCommandBuilder.toJSON(),
   ...sealCommandData,
+  identityCommandData,
   minecraftCommandData,
   mindustryCommandData,
   kickInteractiveCommandData,
@@ -91,10 +98,11 @@ const healthServer = http.createServer(async (req, res) => {
     const kickChat = kickInteractiveStatus(guildId);
     const minecraft = minecraftBridgeStatus();
     const mindustry = mindustryStatus(guildId);
+    const automation = communityAutomationStatus();
     const body = {
       ok: ready,
       service: 'MiojoPlays Community Bot',
-      version: '0.7.0',
+      version: '0.8.0',
       character: CHARACTER.name,
       discord: ready ? 'online' : 'connecting',
       kickLive: {
@@ -124,6 +132,7 @@ const healthServer = http.createServer(async (req, res) => {
         linkedAt: mindustry.linkedAt,
         lastSeenAt: mindustry.lastSeenAt,
       },
+      communityAutomation: automation,
       uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
       timestamp: new Date().toISOString(),
     };
@@ -182,6 +191,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   try {
     await registerCommands();
     await ensurePanels();
+    startCommunityAutomation(client);
     startKickLiveWatcher(client);
   } catch (error) {
     console.error('Falha no bootstrap do bot:', error);
@@ -195,6 +205,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleEventButton(interaction)) return;
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
+    if (await handleIdentityCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
     if (await handleMindustryCommand(interaction)) return;
     if (await handleMinecraftCommand(interaction)) return;
@@ -260,6 +271,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`${signal} recebido. Persistindo dados e encerrando com segurança...`);
 
+  stopCommunityAutomation();
   stopKickLiveWatcher();
   stopMinecraftBridge();
   await flushAllProfiles(client).catch((error) => {
