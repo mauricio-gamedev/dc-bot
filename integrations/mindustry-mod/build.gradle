@@ -1,0 +1,31 @@
+apply plugin: "java"
+
+sourceSets.main.java.srcDirs = ["src"]
+
+ext{
+    mindustryVersion = "v159.7"
+}
+
+repositories{
+    mavenCentral()
+    ivy{
+        url = 'https://github.com/'
+        patternLayout{ artifact('/[organisation]/[module]/releases/download/[revision]/dependencies.jar') }
+        metadataSources{ artifact() }
+        content{ includeVersion("Anuken", "Mindustry", mindustryVersion) }
+    }
+}
+
+java{
+    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies{
+    compileOnly "Anuken:Mindustry:$mindustryVersion"
+}
+
+jar{
+    archiveFileName = "MiojoPlaysInteractiveDesktop.jar"
+    from(projectDir){ include "mod.hjson" }
+}
