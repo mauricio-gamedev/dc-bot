@@ -4,6 +4,8 @@ sourceSets.main.java.srcDirs = ["src"]
 
 ext{
     mindustryVersion = "v159.7"
+    isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+    sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
 }
 
 repositories{
@@ -25,7 +27,67 @@ dependencies{
     compileOnly "Anuken:Mindustry:$mindustryVersion"
 }
 
+tasks.register('jarAndroid'){
+    dependsOn "jar"
+    def projectName = project.name
+
+    doLast{
+        if(!sdkRoot || !new File(sdkRoot).exists()){
+            throw new GradleException("Android SDK não encontrado. Configure ANDROID_HOME ou ANDROID_SDK_ROOT.")
+        }
+
+        def platformRoot = new File("$sdkRoot/platforms/").listFiles()
+            ?.findAll{ new File(it, "android.jar").exists() }
+            ?.sort()
+            ?.reverse()
+            ?.find{ true }
+
+        if(!platformRoot){
+            throw new GradleException("Nenhum android.jar foi encontrado no Android SDK.")
+        }
+
+        def classpath = (configurations.compileClasspath.asList() + [new File(platformRoot, "android.jar")])
+            .collect{ "--classpath \"${it.path}\"" }
+            .join(" ")
+
+        def d8 = isWindows ? "d8.bat" : "d8"
+        def command = "${d8} ${classpath} --min-api 21 --output \"${projectName}Android.jar\" \"${projectName}Desktop.jar\""
+        def process = command.execute(null, new File("build/libs"))
+        process.waitForProcessOutput(System.out, System.err)
+        if(process.exitValue() != 0){
+            throw new GradleException("D8 falhou com código ${process.exitValue()}.")
+        }
+    }
+}
+
 jar{
-    archiveFileName = "MiojoPlaysInteractiveDesktop.jar"
-    from(projectDir){ include "mod.hjson" }
+    archiveFileName = "${project.name}Desktop.jar"
+    from(projectDir){
+        include "mod.hjson"
+    }
+    from("assets/"){
+        include "**"
+    }
+}
+
+tasks.register('deploy', Jar){
+    def projectName = project.name
+    dependsOn jarAndroid
+    dependsOn jar
+    archiveFileName = "${projectName}.jar"
+
+    from{
+        [
+            zipTree("build/libs/${projectName}Desktop.jar"),
+            zipTree("build/libs/${projectName}Android.jar")
+        ]
+    }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    doLast{
+        delete{
+            delete "build/libs/${projectName}Android.jar"
+        }
+    }
 }
