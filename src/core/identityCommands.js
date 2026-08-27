@@ -37,7 +37,7 @@ export async function handleIdentityCommand(interaction) {
           ? roleSync.target
             ? `🏷️ Cargo cosmético sincronizado: **${roleSync.target}**.`
             : '🏷️ Cargo cosmético removido.'
-          : '⚠️ O título foi salvo, mas o cargo visual ainda não pôde ser sincronizado. Verifique a hierarquia do bot.',
+          : '⚠️ O título foi salvo, mas o cargo visual ainda não pôde ser sincronizado. O cargo do bot precisa ficar acima dos cargos cosméticos.',
       ].join('\n'),
       flags: MessageFlags.Ephemeral,
     });
@@ -53,6 +53,13 @@ export async function handleIdentityCommand(interaction) {
     sealState.profile,
   ).catch((error) => ({ error: error.message }));
 
+  const syncOk = !sync.error && sync.title?.ok !== false && sync.seal?.ok !== false;
+  const syncStatus = sync.error
+    ? `⚠️ Sincronização visual: ${sync.error}`
+    : syncOk
+      ? '✅ Título e selo foram reconciliados com os cargos cosméticos do Discord.'
+      : '⚠️ Título/selo estão salvos, mas a hierarquia do Discord bloqueou um dos cargos cosméticos. Deixe o cargo do bot acima deles.';
+
   await interaction.reply({
     embeds: [characterEmbed({
       title: '✨ Identidade MiojoPlays',
@@ -60,9 +67,7 @@ export async function handleIdentityCommand(interaction) {
         `🏷️ **Título:** ${sealState.profile.title || 'Sem título'}`,
         `✨ **Selo:** ${sealState.equipped?.label ?? 'Nenhum equipado'}`,
         '',
-        sync.error
-          ? `⚠️ Sincronização visual: ${sync.error}`
-          : '✅ Título e selo foram reconciliados com os cargos cosméticos do Discord.',
+        syncStatus,
         '',
         'Use `/titulo` para trocar o título e `/selo equipar` para trocar o selo.',
       ].join('\n'),
