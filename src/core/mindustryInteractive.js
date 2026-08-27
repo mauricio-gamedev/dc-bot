@@ -236,6 +236,23 @@ export function mindustryStatus(guildId) {
   };
 }
 
+export function enqueueMindustryAction(guildId, actionId, by = 'viewer') {
+  const session = guildId ? activeSessionForGuild(guildId) : null;
+  if (!session) return { ok: false, error: 'disconnected' };
+  if (!session.interactionsOpen) return { ok: false, error: 'closed' };
+
+  const selected = ACTIONS[actionId];
+  if (!selected) return { ok: false, error: 'invalid_action' };
+
+  if (session.queue.length >= MAX_QUEUE) session.queue.shift();
+  session.queue.push({
+    id: randomBytes(8).toString('hex'),
+    type: selected.action,
+    by: String(by || 'viewer').slice(0, 80),
+  });
+  return { ok: true, label: selected.label, action: selected.action };
+}
+
 export async function handleMindustryCommand(interaction) {
   if (!interaction.isChatInputCommand() || interaction.commandName !== 'mindustry' || !interaction.guild) return false;
 
@@ -299,25 +316,19 @@ export async function handleMindustryCommand(interaction) {
   }
 
   if (sub === 'acao') {
-    if (!session) {
-      await interaction.reply({ content: '🎮 O Mindustry não está conectado agora.', flags: MessageFlags.Ephemeral });
-      return true;
-    }
-    if (!session.interactionsOpen) {
-      await interaction.reply({ content: '🔒 As interações estão fechadas pelo dono.', flags: MessageFlags.Ephemeral });
-      return true;
-    }
-
     const id = interaction.options.getString('tipo', true);
-    const selected = ACTIONS[id];
-    if (!selected) {
-      await interaction.reply({ content: 'Ação inválida.', flags: MessageFlags.Ephemeral });
+    const result = enqueueMindustryAction(guildId, id, interaction.user.username);
+    if (!result.ok) {
+      const messages = {
+        disconnected: '🎮 O Mindustry não está conectado agora.',
+        closed: '🔒 As interações estão fechadas pelo dono.',
+        invalid_action: 'Ação inválida.',
+      };
+      await interaction.reply({ content: messages[result.error] || 'Não foi possível enviar a ação.', flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    if (session.queue.length >= MAX_QUEUE) session.queue.shift();
-    session.queue.push({ id: randomBytes(8).toString('hex'), type: selected.action, by: interaction.user.username });
-    await interaction.reply({ content: `${selected.label} enviado para a fila do jogo. ✅` });
+    await interaction.reply({ content: `${result.label} enviado para a fila do jogo. ✅` });
     return true;
   }
 
