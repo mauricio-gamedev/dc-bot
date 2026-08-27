@@ -36,6 +36,12 @@ import {
   startKickLiveWatcher,
   stopKickLiveWatcher,
 } from './core/kickLive.js';
+import {
+  handleKickInteractiveCommand,
+  handleKickInteractiveHttp,
+  kickInteractiveCommandData,
+  kickInteractiveStatus,
+} from './core/kickInteractive.js';
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID?.trim();
@@ -49,6 +55,7 @@ const registeredCommandData = [
   ...sealCommandData,
   minecraftCommandData,
   mindustryCommandData,
+  kickInteractiveCommandData,
 ];
 
 if (!token) {
@@ -68,6 +75,7 @@ attachLogging(client);
 
 const healthServer = http.createServer(async (req, res) => {
   try {
+    if (await handleKickInteractiveHttp(req, res, client)) return;
     if (await handleMindustryHttp(req, res, client)) return;
 
     const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
@@ -80,12 +88,13 @@ const healthServer = http.createServer(async (req, res) => {
 
     const ready = client.isReady();
     const kick = kickLiveStatus();
+    const kickChat = kickInteractiveStatus(guildId);
     const minecraft = minecraftBridgeStatus();
     const mindustry = mindustryStatus(guildId);
     const body = {
       ok: ready,
       service: 'MiojoPlays Community Bot',
-      version: '0.6.0',
+      version: '0.7.0',
       character: CHARACTER.name,
       discord: ready ? 'online' : 'connecting',
       kickLive: {
@@ -95,6 +104,13 @@ const healthServer = http.createServer(async (req, res) => {
         live: Boolean(kick.lastState?.isLive),
         slug: kick.slug,
         sessionKey: kick.sessionKey,
+      },
+      kickInteractive: {
+        enabled: kickChat.enabled,
+        configured: kickChat.configured,
+        subscribed: kickChat.subscribed,
+        lastWebhookAt: kickChat.lastWebhookAt,
+        lastCommandAt: kickChat.lastCommandAt,
       },
       minecraftInteractive: {
         bridge: minecraft.attached,
@@ -175,6 +191,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleKickLiveButton(interaction)) return;
+    if (await handleKickInteractiveCommand(interaction)) return;
     if (await handleEventButton(interaction)) return;
     if (await handleOwnerCoinCommand(interaction)) return;
     if (await handleEventCommand(interaction)) return;
