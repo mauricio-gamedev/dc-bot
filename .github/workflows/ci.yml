@@ -87,3 +87,48 @@ jobs:
           fi
           git commit -m "chore(mindustry): refresh Android JAR [skip ci]"
           git push
+
+  verify-render-deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify deployed bot version and automation
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          HEALTH_URL="https://dc-bot-us5v.onrender.com/health"
+          LAST_BODY=""
+
+          for attempt in $(seq 1 36); do
+            LAST_BODY="$(curl -fsS --max-time 20 "$HEALTH_URL" || true)"
+            if BODY="$LAST_BODY" VERSION="$VERSION" node -e '
+              try {
+                const health = JSON.parse(process.env.BODY || "{}");
+                const automation = health.communityAutomation || {};
+                const ok = health.ok === true
+                  && health.discord === "online"
+                  && health.version === process.env.VERSION
+                  && automation.enabled === true
+                  && Number(automation.runs || 0) >= 1
+                  && Boolean(automation.lastStructuralRunAt)
+                  && !automation.lastError;
+                process.exit(ok ? 0 : 1);
+              } catch {
+                process.exit(1);
+              }
+            '; then
+              echo "Render deploy healthy: version $VERSION with community automation active."
+              echo "$LAST_BODY"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Render deployment did not reach the expected healthy state."
+          echo "Last health response: $LAST_BODY"
+          exit 1
