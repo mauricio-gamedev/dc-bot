@@ -29,7 +29,7 @@ def patch_base_activity() -> None:
 
 def write_startup_trace() -> None:
     STARTUP_TRACE.write_text(
-        '''package com.gta.game;
+        r'''package com.gta.game;
 
 import java.io.File;
 import java.io.FileOutputStream;
