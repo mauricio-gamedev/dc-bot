@@ -9,6 +9,8 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
@@ -18,6 +20,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -30,19 +33,33 @@ public final class MainActivity extends Activity {
     static final String KEY_LATENCY = "latency";
     static final String KEY_MONITOR_VOLUME = "monitor_volume";
     static final String KEY_CLEANUP = "cleanup_strength";
+    static final String KEY_VAD_ENABLED = "vad_enabled";
+    static final String KEY_VAD_ACTIVE = "vad_active";
+    static final String KEY_VAD_CONFIDENCE = "vad_confidence";
 
     private TextView connectionView;
     private TextView presetView;
     private TextView routeView;
+    private TextView vadView;
     private TextView volumeLabel;
     private TextView cleanupLabel;
     private EditText codeInput;
     private SharedPreferences prefs;
+    private Handler statusHandler;
+
+    private final Runnable statusTicker = new Runnable() {
+        @Override
+        public void run() {
+            refreshStatus();
+            if (statusHandler != null) statusHandler.postDelayed(this, 500);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        statusHandler = new Handler(Looper.getMainLooper());
         setContentView(buildUi());
         requestRuntimePermissions();
         refreshStatus();
@@ -51,7 +68,16 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        refreshStatus();
+        if (statusHandler != null) {
+            statusHandler.removeCallbacks(statusTicker);
+            statusHandler.post(statusTicker);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (statusHandler != null) statusHandler.removeCallbacks(statusTicker);
+        super.onPause();
     }
 
     private View buildUi() {
@@ -75,9 +101,11 @@ public final class MainActivity extends Activity {
         connectionView = cardText();
         presetView = cardText();
         routeView = cardText();
+        vadView = cardText();
         root.addView(connectionView);
         root.addView(presetView);
         root.addView(routeView);
+        root.addView(vadView);
 
         TextView audioTitle = text("Ajustes locais", 18, true);
         audioTitle.setTextColor(Color.WHITE);
@@ -127,6 +155,18 @@ public final class MainActivity extends Activity {
         });
         root.addView(cleanup);
 
+        Switch vadSwitch = new Switch(this);
+        vadSwitch.setText("🗣️ Detector de voz (VAD)");
+        vadSwitch.setTextColor(Color.WHITE);
+        vadSwitch.setTextSize(15);
+        vadSwitch.setPadding(0, dp(8), 0, dp(2));
+        vadSwitch.setChecked(prefs.getBoolean(KEY_VAD_ENABLED, true));
+        vadSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.edit().putBoolean(KEY_VAD_ENABLED, isChecked).apply();
+            refreshStatus();
+        });
+        root.addView(vadSwitch);
+
         volumeLabel.setText("🔊 Volume do monitor: " + volume.getProgress() + "%");
         cleanupLabel.setText("🧹 Limpeza do mic: " + cleanup.getProgress() + "%");
 
@@ -158,7 +198,11 @@ public final class MainActivity extends Activity {
         Button stop = button("Parar processamento");
         stop.setOnClickListener(v -> {
             stopService(new Intent(this, VoiceService.class));
-            prefs.edit().putString(KEY_STATUS, "parado").apply();
+            prefs.edit()
+                .putString(KEY_STATUS, "parado")
+                .putBoolean(KEY_VAD_ACTIVE, false)
+                .putInt(KEY_VAD_CONFIDENCE, 0)
+                .apply();
             refreshStatus();
         });
         root.addView(stop);
@@ -168,10 +212,10 @@ public final class MainActivity extends Activity {
         root.addView(refresh);
 
         TextView note = text(
-            "Protótipo Android v0.1.2: o áudio continua 100% local. A limpeza usa o supressor nativo do Android quando disponível, " +
-            "cancelamento de eco, gate/expander adaptativo e corte de ruído grave. O volume do monitor é independente da intensidade do personagem. " +
-            "Se a limpeza cortar final de palavras, reduza alguns pontos. Para monitor sem microfonia, prefira fone/headset. " +
-            "O modo microfone virtual para jogos continua experimental porque o Android comum bloqueia a substituição do microfone de outro app.",
+            "Protótipo Android v0.1.3: o áudio continua 100% local. O pipeline tenta modo de baixa latência, usa VAD com hangover para " +
+            "segurar o final das palavras e combina o detector com supressão adaptativa, AEC/NS nativos e filtro de banda de fala. " +
+            "A latência mostrada é uma estimativa do pipeline, não uma medição round-trip do aparelho. Para monitor sem microfonia, prefira fone/headset. " +
+            "Vozes neurais personalizadas terão um motor separado para não sacrificar o FPS do modo leve.",
             14,
             false
         );
@@ -280,15 +324,26 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
+        if (prefs == null || connectionView == null) return;
         String token = prefs.getString(KEY_TOKEN, "");
         String status = prefs.getString(KEY_STATUS, token.isEmpty() ? "não vinculado" : "vinculado");
         String preset = prefs.getString(KEY_PRESET, "Normal");
         String route = prefs.getString(KEY_ROUTE, "—");
         int latency = prefs.getInt(KEY_LATENCY, -1);
+        boolean vadEnabled = prefs.getBoolean(KEY_VAD_ENABLED, true);
+        boolean vadActive = prefs.getBoolean(KEY_VAD_ACTIVE, false);
+        int confidence = prefs.getInt(KEY_VAD_CONFIDENCE, 0);
 
         connectionView.setText("📡 Estado: " + status);
         presetView.setText("🎭 Preset: " + preset);
-        routeView.setText("🎧 Rota: " + route + "   •   Latência: " + (latency >= 0 ? latency + " ms" : "—"));
+        routeView.setText("🎧 Rota: " + route + "   •   Latência estimada: " + (latency >= 0 ? latency + " ms" : "—"));
+        if (!vadEnabled) {
+            vadView.setText("🗣️ Detector: desligado");
+        } else if (vadActive) {
+            vadView.setText("🗣️ Detector: VOZ • confiança " + confidence + "%");
+        } else {
+            vadView.setText("🤫 Detector: silêncio • confiança " + confidence + "%");
+        }
     }
 
     private void toast(String message) {
