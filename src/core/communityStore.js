@@ -31,6 +31,8 @@ function defaultProfile(userId) {
     equippedSeal: '',
     mindustryLinkHash: '',
     mindustryLinkedAt: 0,
+    terrariaLinkHash: '',
+    terrariaLinkedAt: 0,
     kickOAuthRefreshEncrypted: '',
     kickOAuthScope: '',
     kickOAuthLinkedAt: 0,
@@ -56,7 +58,7 @@ function normalizeProfile(userId, raw = {}) {
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
     'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'liveAttendanceCount',
-    'eventParticipationCount', 'mindustryLinkedAt', 'kickOAuthLinkedAt', 'voiceLinkedAt',
+    'eventParticipationCount', 'mindustryLinkedAt', 'terrariaLinkedAt', 'kickOAuthLinkedAt', 'voiceLinkedAt',
     'voiceIntensity', 'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
@@ -66,6 +68,7 @@ function normalizeProfile(userId, raw = {}) {
   data.liveAttendanceCount = Math.max(0, Math.floor(data.liveAttendanceCount));
   data.eventParticipationCount = Math.max(0, Math.floor(data.eventParticipationCount));
   data.mindustryLinkedAt = Math.max(0, Math.floor(data.mindustryLinkedAt));
+  data.terrariaLinkedAt = Math.max(0, Math.floor(data.terrariaLinkedAt));
   data.kickOAuthLinkedAt = Math.max(0, Math.floor(data.kickOAuthLinkedAt));
   data.voiceLinkedAt = Math.max(0, Math.floor(data.voiceLinkedAt));
   data.voiceIntensity = Math.min(100, Math.max(0, Math.round(data.voiceIntensity)));
@@ -82,6 +85,9 @@ function normalizeProfile(userId, raw = {}) {
     : '';
   data.mindustryLinkHash = typeof data.mindustryLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.mindustryLinkHash)
     ? data.mindustryLinkHash.toLowerCase()
+    : '';
+  data.terrariaLinkHash = typeof data.terrariaLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.terrariaLinkHash)
+    ? data.terrariaLinkHash.toLowerCase()
     : '';
   data.kickOAuthRefreshEncrypted = typeof data.kickOAuthRefreshEncrypted === 'string' && data.kickOAuthRefreshEncrypted.length <= 4096
     ? data.kickOAuthRefreshEncrypted
@@ -208,6 +214,8 @@ function serializeProfile(profile) {
     equippedSeal: profile.equippedSeal,
     mindustryLinkHash: profile.mindustryLinkHash,
     mindustryLinkedAt: profile.mindustryLinkedAt,
+    terrariaLinkHash: profile.terrariaLinkHash,
+    terrariaLinkedAt: profile.terrariaLinkedAt,
     kickOAuthRefreshEncrypted: profile.kickOAuthRefreshEncrypted,
     kickOAuthScope: profile.kickOAuthScope,
     kickOAuthLinkedAt: profile.kickOAuthLinkedAt,
