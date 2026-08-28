@@ -10,6 +10,7 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -31,12 +32,22 @@ final class AudioEngine {
     private AudioTrack player;
     private NoiseSuppressor noiseSuppressor;
     private AcousticEchoCanceler acousticEchoCanceler;
+    private AutomaticGainControl automaticGainControl;
     private Thread thread;
     private volatile int estimatedLatencyMs = -1;
+    private volatile float monitorVolume = 0.55f;
+    private volatile float cleanupStrength = 0.80f;
+
     private float lowState = 0f;
     private float outputLowpassState = 0f;
     private float robotPhase = 0f;
     private int reverbIndex = 0;
+
+    private float highPassState = 0f;
+    private float highPassPreviousInput = 0f;
+    private float inputEnvelope = 0f;
+    private float noiseFloor = 0.0035f;
+    private float gateGain = 1f;
 
     AudioEngine(Context context) {
         this.context = context.getApplicationContext();
@@ -44,6 +55,20 @@ final class AudioEngine {
 
     void setConfig(VoiceApi.Config next) {
         if (next != null) config.set(next);
+    }
+
+    void setMonitorVolume(float value) {
+        monitorVolume = clamp(value, 0.10f, 1f);
+        AudioTrack current = player;
+        if (current != null) {
+            try {
+                current.setVolume(monitorVolume);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    void setCleanupStrength(float value) {
+        cleanupStrength = clamp(value, 0f, 1f);
     }
 
     boolean isRunning() {
@@ -79,15 +104,17 @@ final class AudioEngine {
             int inputBuffer = Math.max(minIn * 2, blockSamples * 8);
             int outputBuffer = Math.max(minOut * 2, blockSamples * 8);
 
-            recorder = new AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-                .setAudioFormat(new AudioFormat.Builder()
-                    .setEncoding(ENCODING)
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(CHANNEL_IN)
-                    .build())
-                .setBufferSizeInBytes(inputBuffer)
-                .build();
+            // VOICE_COMMUNICATION gives Samsung/Android audio policy the best chance
+            // to attach its native voice-call AEC/NS path. Fall back safely on devices
+            // where that source cannot initialize.
+            recorder = createRecorder(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputBuffer);
+            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                recorder.release();
+                recorder = createRecorder(MediaRecorder.AudioSource.VOICE_RECOGNITION, inputBuffer);
+            }
+            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                throw new IllegalStateException("audio_record_init_failed");
+            }
 
             player = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
@@ -102,6 +129,7 @@ final class AudioEngine {
                 .setBufferSizeInBytes(outputBuffer)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
+            player.setVolume(monitorVolume);
 
             if (NoiseSuppressor.isAvailable()) {
                 noiseSuppressor = NoiseSuppressor.create(recorder.getAudioSessionId());
@@ -111,6 +139,13 @@ final class AudioEngine {
             if (AcousticEchoCanceler.isAvailable()) {
                 acousticEchoCanceler = AcousticEchoCanceler.create(recorder.getAudioSessionId());
                 if (acousticEchoCanceler != null) acousticEchoCanceler.setEnabled(true);
+            }
+
+            // Some devices auto-boost the mic in communication mode. That makes room
+            // noise louder and fights our gate, so disable platform AGC when possible.
+            if (AutomaticGainControl.isAvailable()) {
+                automaticGainControl = AutomaticGainControl.create(recorder.getAudioSessionId());
+                if (automaticGainControl != null) automaticGainControl.setEnabled(false);
             }
 
             AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
@@ -137,23 +172,65 @@ final class AudioEngine {
         }
     }
 
+    private AudioRecord createRecorder(int source, int inputBuffer) {
+        return new AudioRecord.Builder()
+            .setAudioSource(source)
+            .setAudioFormat(new AudioFormat.Builder()
+                .setEncoding(ENCODING)
+                .setSampleRate(SAMPLE_RATE)
+                .setChannelMask(CHANNEL_IN)
+                .build())
+            .setBufferSizeInBytes(inputBuffer)
+            .build();
+    }
+
     private void process(short[] input, short[] output, int length, VoiceApi.Config cfg) {
-        // Intensity now scales the transformation itself instead of blending an
-        // immediate dry signal with a delayed wet signal. The old parallel mix
-        // produced two audible voices and comb-filter/whistling artifacts.
         float strength = clamp((float) cfg.mix, 0f, 1f);
+        float cleanup = cleanupStrength;
         float formant = (float) cfg.formant * strength;
         float bassGain = dbToGain((float) cfg.bass * strength - formant * 0.7f);
         float presenceGain = dbToGain((float) cfg.presence * strength + formant * 0.9f);
         float drive = clamp((float) cfg.drive * strength, 0f, 1f);
         float robot = clamp((float) cfg.robot * strength, 0f, 1f);
-        float reverb = clamp((float) cfg.reverb * strength, 0f, 0.65f);
+        float reverb = clamp((float) cfg.reverb * strength, 0f, 0.55f);
         float pitch = (float) cfg.pitch * strength;
         boolean pitchActive = Math.abs(pitch) >= 0.03f;
 
+        // Stronger cleanup increases the adaptive open threshold and lowers the
+        // residual gain while the user is not speaking. Hysteresis prevents chatter.
+        float baseOpenThreshold = 0.007f + cleanup * 0.011f;
+        float baseCloseThreshold = 0.0045f + cleanup * 0.0075f;
+        float floorGain = 0.02f + (1f - cleanup) * 0.30f;
+
         for (int i = 0; i < length; i++) {
-            float dry = input[i] / 32768f;
-            float x = pitchShifter.process(dry, pitch);
+            float raw = input[i] / 32768f;
+
+            // ~120 Hz high-pass removes handling/room rumble before the detector.
+            float highPassed = 0.985f * (highPassState + raw - highPassPreviousInput);
+            highPassPreviousInput = raw;
+            highPassState = highPassed;
+
+            float absolute = Math.abs(highPassed);
+            float envelopeRate = absolute > inputEnvelope ? 0.075f : 0.004f;
+            inputEnvelope += (absolute - inputEnvelope) * envelopeRate;
+
+            // Learn the room floor slowly only while the signal is reasonably quiet.
+            if (inputEnvelope < 0.07f) {
+                noiseFloor += (inputEnvelope - noiseFloor) * 0.00012f;
+                noiseFloor = clamp(noiseFloor, 0.0015f, 0.035f);
+            }
+
+            float dynamicOpen = Math.max(baseOpenThreshold, noiseFloor * (1.65f + cleanup * 1.25f));
+            float dynamicClose = Math.max(baseCloseThreshold, noiseFloor * (1.30f + cleanup * 0.80f));
+            boolean currentlyOpen = gateGain > 0.45f;
+            float gateTarget = currentlyOpen
+                ? (inputEnvelope > dynamicClose ? 1f : floorGain)
+                : (inputEnvelope > dynamicOpen ? 1f : floorGain);
+            float gateRate = gateTarget > gateGain ? 0.085f : 0.00055f;
+            gateGain += (gateTarget - gateGain) * gateRate;
+
+            float cleaned = highPassed * gateGain;
+            float x = pitchShifter.process(cleaned, pitch);
 
             lowState += 0.055f * (x - lowState);
             float high = x - lowState;
@@ -173,27 +250,33 @@ final class AudioEngine {
 
             if (reverb > 0.001f) {
                 float delayed = reverbBuffer[reverbIndex];
-                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.30f, -1f, 1f);
+                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.22f, -1f, 1f);
                 reverbIndex++;
                 if (reverbIndex >= reverbBuffer.length) reverbIndex = 0;
                 x = x * (1f - reverb) + delayed * reverb;
             }
 
-            // Gentle post-pitch high-frequency damping helps suppress the thin
-            // periodic whistle that simple time-domain pitch shifting can add.
+            // Adaptive post-pitch damping: stronger for large pitch shifts where the
+            // time-domain shifter can occasionally create a narrow whistle.
             if (pitchActive) {
-                outputLowpassState += 0.78f * (x - outputLowpassState);
+                float damping = clamp(0.72f - Math.abs(pitch) * 0.025f, 0.54f, 0.72f);
+                outputLowpassState += damping * (x - outputLowpassState);
                 x = outputLowpassState;
             } else {
                 outputLowpassState = x;
             }
 
-            x = softLimit(x);
+            x = softLimit(x * 0.90f);
             output[i] = (short) Math.round(x * 32767f);
         }
     }
 
     private void releaseAudio() {
+        try {
+            if (automaticGainControl != null) automaticGainControl.release();
+        } catch (Exception ignored) {}
+        automaticGainControl = null;
+
         try {
             if (acousticEchoCanceler != null) acousticEchoCanceler.release();
         } catch (Exception ignored) {}

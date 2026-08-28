@@ -36,6 +36,7 @@ public final class VoiceService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, notification("Conectando ao Mio Voice..."));
         if (running.compareAndSet(false, true)) {
+            applyLocalAudioSettings();
             prefs.edit().putString(MainActivity.KEY_STATUS, "processando").apply();
             engine.start();
             pollThread = new Thread(this::pollLoop, "mio-voice-poll");
@@ -72,13 +73,19 @@ public final class VoiceService extends Service {
 
             int sleepMs = 1000;
             try {
+                applyLocalAudioSettings();
                 VoiceApi.Config config = VoiceApi.pull(token);
                 sleepMs = config.pollAfterMs;
                 if (config.revision != lastRevision) {
                     engine.setConfig(config);
                     lastRevision = config.revision;
-                    updateNotification("Ativo • " + config.label + " • " + config.intensity + "%");
                 }
+
+                int volume = prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55);
+                int cleanup = prefs.getInt(MainActivity.KEY_CLEANUP, 82);
+                updateNotification(
+                    "Ativo • " + config.label + " • efeito " + config.intensity + "% • vol " + volume + "% • limpeza " + cleanup + "%"
+                );
 
                 String route = detectRoute();
                 int latency = engine.getEstimatedLatencyMs();
@@ -112,6 +119,13 @@ public final class VoiceService extends Service {
                 return;
             }
         }
+    }
+
+    private void applyLocalAudioSettings() {
+        int volume = Math.max(20, Math.min(100, prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55)));
+        int cleanup = Math.max(0, Math.min(100, prefs.getInt(MainActivity.KEY_CLEANUP, 82)));
+        engine.setMonitorVolume(volume / 100f);
+        engine.setCleanupStrength(cleanup / 100f);
     }
 
     private String detectRoute() {
