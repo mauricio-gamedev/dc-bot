@@ -12,6 +12,7 @@ import ai.onnxruntime.TensorInfo;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
 import java.util.HashMap;
@@ -21,8 +22,9 @@ import java.util.Set;
 /**
  * Minimal on-device RVC inference path for Mio Voice.
  *
- * Compatible with voice-changer style ONNX exports: ContentVec/HuBERT + RMVPE
- * + RVC synthesizer. The audio never leaves the phone.
+ * Supports both Mio/voice-changer style ONNX exports (feats/p_len/pitch/pitchf/sid)
+ * and common RVC v2 ONNX exports (phone/phone_lengths/pitch/nsff0/sid).
+ * The audio never leaves the phone.
  */
 final class RvcNeuralEngine implements AutoCloseable {
     static final class ModelInfo {
@@ -67,9 +69,7 @@ final class RvcNeuralEngine implements AutoCloseable {
         OrtEnvironment env = OrtEnvironment.getEnvironment();
         try (OrtSession.SessionOptions options = new OrtSession.SessionOptions();
              OrtSession session = env.createSession(synthFile.getAbsolutePath(), options)) {
-            if (!session.getInputInfo().containsKey("feats")
-                || !session.getInputInfo().containsKey("p_len")
-                || !session.getInputInfo().containsKey("sid")) {
+            if (!isSupportedSynthSchema(session)) {
                 throw new IllegalArgumentException("rvc_synth_schema_incompatible");
             }
             return readModelInfo(session, label);
@@ -123,24 +123,44 @@ final class RvcNeuralEngine implements AutoCloseable {
     }
 
     private void validateSchemas() throws OrtException {
-        requireInput(hubert, "audio");
-        requireInput(rmvpe, "waveform");
-        requireInput(rmvpe, "threshold");
-        requireInput(synth, "feats");
-        requireInput(synth, "p_len");
-        requireInput(synth, "sid");
-        if (modelInfo.f0) {
-            requireInput(synth, "pitch");
-            requireInput(synth, "pitchf");
+        Map<String, NodeInfo> hubertInputs = hubert.getInputInfo();
+        boolean hubertSupported = hubertInputs.containsKey("audio")
+            || (hubertInputs.containsKey("source") && hubertInputs.containsKey("padding_mask"))
+            || hubertInputs.containsKey("input_values");
+        if (!hubertSupported) {
+            throw new IllegalArgumentException("hubert_schema_incompatible");
         }
 
-        NodeInfo feats = synth.getInputInfo().get("feats");
+        requireInput(rmvpe, "waveform");
+        requireInput(rmvpe, "threshold");
+
+        if (!isSupportedSynthSchema(synth)) {
+            throw new IllegalArgumentException("rvc_synth_schema_incompatible");
+        }
+
+        String featureInput = synth.getInputInfo().containsKey("feats") ? "feats" : "phone";
+        NodeInfo feats = synth.getInputInfo().get(featureInput);
         if (feats != null && feats.getInfo() instanceof TensorInfo) {
             OnnxJavaType type = ((TensorInfo) feats.getInfo()).type;
             if (type != OnnxJavaType.FLOAT) {
                 throw new IllegalArgumentException("rvc_fp16_not_supported_yet");
             }
         }
+    }
+
+    private static boolean isSupportedSynthSchema(OrtSession session) throws OrtException {
+        Map<String, NodeInfo> inputs = session.getInputInfo();
+        boolean mioSchema = inputs.containsKey("feats")
+            && inputs.containsKey("p_len")
+            && inputs.containsKey("sid");
+        boolean standardRvcSchema = inputs.containsKey("phone")
+            && inputs.containsKey("phone_lengths")
+            && inputs.containsKey("sid");
+        if (!mioSchema && !standardRvcSchema) return false;
+
+        boolean hasPitch = inputs.containsKey("pitch");
+        boolean hasContinuousPitch = inputs.containsKey("pitchf") || inputs.containsKey("nsff0");
+        return !hasPitch || hasContinuousPitch;
     }
 
     private static void requireInput(OrtSession session, String name) throws OrtException {
@@ -150,20 +170,65 @@ final class RvcNeuralEngine implements AutoCloseable {
     }
 
     private Embedding extractEmbedding(float[] audio16k) throws Exception {
-        try (OnnxTensor audio = OnnxTensor.createTensor(env, FloatBuffer.wrap(audio16k), new long[]{1L, audio16k.length});
-             OrtSession.Result result = hubert.run(Map.of("audio", audio), Set.of(hubertOutput))) {
-            OnnxValue value = result.iterator().next().getValue();
-            if (!(value instanceof OnnxTensor)) throw new IllegalArgumentException("hubert_output_not_tensor");
-            OnnxTensor tensor = (OnnxTensor) value;
-            long[] shape = tensor.getInfo().getShape();
-            if (shape.length != 3 || shape[0] != 1L || shape[1] <= 0 || shape[2] <= 0) {
-                throw new IllegalArgumentException("hubert_output_shape");
+        Map<String, OnnxTensor> inputs = new HashMap<>();
+        try {
+            Map<String, NodeInfo> schema = hubert.getInputInfo();
+            if (schema.containsKey("audio")) {
+                inputs.put("audio", OnnxTensor.createTensor(
+                    env,
+                    FloatBuffer.wrap(audio16k),
+                    new long[]{1L, audio16k.length}
+                ));
+            } else if (schema.containsKey("source") && schema.containsKey("padding_mask")) {
+                inputs.put("source", OnnxTensor.createTensor(
+                    env,
+                    FloatBuffer.wrap(audio16k),
+                    new long[]{1L, audio16k.length}
+                ));
+                byte[] mask = new byte[audio16k.length];
+                inputs.put("padding_mask", OnnxTensor.createTensor(
+                    env,
+                    ByteBuffer.wrap(mask),
+                    new long[]{1L, audio16k.length},
+                    OnnxJavaType.BOOL
+                ));
+            } else if (schema.containsKey("input_values")) {
+                inputs.put("input_values", OnnxTensor.createTensor(
+                    env,
+                    FloatBuffer.wrap(audio16k),
+                    new long[]{1L, audio16k.length}
+                ));
+                if (schema.containsKey("attention_mask")) {
+                    long[] attention = new long[audio16k.length];
+                    for (int i = 0; i < attention.length; i++) attention[i] = 1L;
+                    inputs.put("attention_mask", OnnxTensor.createTensor(
+                        env,
+                        LongBuffer.wrap(attention),
+                        new long[]{1L, audio16k.length}
+                    ));
+                }
+            } else {
+                throw new IllegalArgumentException("hubert_schema_incompatible");
             }
-            FloatBuffer buffer = tensor.getFloatBuffer();
-            if (buffer == null) throw new IllegalArgumentException("hubert_output_type");
-            float[] values = new float[buffer.remaining()];
-            buffer.get(values);
-            return new Embedding(values, (int) shape[1], (int) shape[2]);
+
+            try (OrtSession.Result result = hubert.run(inputs, Set.of(hubertOutput))) {
+                OnnxValue value = result.iterator().next().getValue();
+                if (!(value instanceof OnnxTensor)) throw new IllegalArgumentException("hubert_output_not_tensor");
+                OnnxTensor tensor = (OnnxTensor) value;
+                long[] shape = tensor.getInfo().getShape();
+                if (shape.length != 3 || shape[0] != 1L || shape[1] <= 0 || shape[2] <= 0) {
+                    throw new IllegalArgumentException("hubert_output_shape");
+                }
+                FloatBuffer buffer = tensor.getFloatBuffer();
+                if (buffer == null) throw new IllegalArgumentException("hubert_output_type");
+                float[] values = new float[buffer.remaining()];
+                buffer.get(values);
+                return new Embedding(values, (int) shape[1], (int) shape[2]);
+            }
+        } finally {
+            for (OnnxTensor tensor : inputs.values()) {
+                try { tensor.close(); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -200,15 +265,31 @@ final class RvcNeuralEngine implements AutoCloseable {
     ) throws Exception {
         Map<String, OnnxTensor> inputs = new HashMap<>();
         try {
-            inputs.put("feats", OnnxTensor.createTensor(env, FloatBuffer.wrap(feats), new long[]{1L, frames, channels}));
-            inputs.put("p_len", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{frames}), new long[]{1L}));
-            inputs.put("sid", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{0L}), new long[]{1L}));
-            if (modelInfo.f0) {
-                inputs.put("pitch", OnnxTensor.createTensor(env, LongBuffer.wrap(pitch), new long[]{1L, frames}));
-                inputs.put("pitchf", OnnxTensor.createTensor(env, FloatBuffer.wrap(pitchf), new long[]{1L, frames}));
+            Map<String, NodeInfo> schema = synth.getInputInfo();
+            if (schema.containsKey("feats")) {
+                inputs.put("feats", OnnxTensor.createTensor(env, FloatBuffer.wrap(feats), new long[]{1L, frames, channels}));
+                inputs.put("p_len", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{frames}), new long[]{1L}));
+                inputs.put("sid", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{0L}), new long[]{1L}));
+                if (modelInfo.f0) {
+                    inputs.put("pitch", OnnxTensor.createTensor(env, LongBuffer.wrap(pitch), new long[]{1L, frames}));
+                    inputs.put("pitchf", OnnxTensor.createTensor(env, FloatBuffer.wrap(pitchf), new long[]{1L, frames}));
+                }
+            } else if (schema.containsKey("phone")) {
+                inputs.put("phone", OnnxTensor.createTensor(env, FloatBuffer.wrap(feats), new long[]{1L, frames, channels}));
+                inputs.put("phone_lengths", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{frames}), new long[]{1L}));
+                inputs.put("sid", OnnxTensor.createTensor(env, LongBuffer.wrap(new long[]{0L}), new long[]{1L}));
+                if (modelInfo.f0) {
+                    inputs.put("pitch", OnnxTensor.createTensor(env, LongBuffer.wrap(pitch), new long[]{1L, frames}));
+                    String f0Name = schema.containsKey("nsff0") ? "nsff0" : "pitchf";
+                    inputs.put(f0Name, OnnxTensor.createTensor(env, FloatBuffer.wrap(pitchf), new long[]{1L, frames}));
+                }
+            } else {
+                throw new IllegalArgumentException("rvc_synth_schema_incompatible");
             }
 
-            Set<String> requested = synth.getOutputInfo().containsKey("audio") ? Set.of("audio") : synth.getOutputInfo().keySet();
+            Set<String> requested = synth.getOutputInfo().containsKey("audio")
+                ? Set.of("audio")
+                : Set.of(synth.getOutputInfo().keySet().iterator().next());
             try (OrtSession.Result result = synth.run(inputs, requested)) {
                 OnnxValue value = result.iterator().next().getValue();
                 if (!(value instanceof OnnxTensor)) throw new IllegalArgumentException("synth_output_not_tensor");
@@ -232,7 +313,9 @@ final class RvcNeuralEngine implements AutoCloseable {
         else if (embOutputLayer == 12 && useFinalProj) preferred = "unit12s";
         else preferred = "unit12";
         if (session.getOutputInfo().containsKey(preferred)) return preferred;
-        for (String candidate : new String[]{"unit12", "units9", "unit12s"}) {
+        for (String candidate : new String[]{
+            "unit12", "units9", "unit12s", "hidden_states", "last_hidden_state", "embedder_output"
+        }) {
             if (session.getOutputInfo().containsKey(candidate)) return candidate;
         }
         if (!session.getOutputInfo().isEmpty()) return session.getOutputInfo().keySet().iterator().next();
@@ -241,7 +324,10 @@ final class RvcNeuralEngine implements AutoCloseable {
 
     private static ModelInfo readModelInfo(OrtSession session, String label) throws Exception {
         int sampleRate = 40_000;
-        boolean f0 = true;
+        Map<String, NodeInfo> inputs = session.getInputInfo();
+        boolean f0 = inputs.containsKey("pitch")
+            && (inputs.containsKey("pitchf") || inputs.containsKey("nsff0"));
+
         String raw = session.getMetadata().getCustomMetadata().get("metadata");
         if (raw != null && !raw.isBlank()) {
             JSONObject metadata = new JSONObject(raw);
