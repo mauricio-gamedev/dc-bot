@@ -43,6 +43,7 @@ import {
   terrariaCommandData,
   terrariaStatus,
 } from './core/terrariaInteractive.js';
+import { handleKickTerrariaHttp } from './core/kickTerrariaInteractive.js';
 import {
   handleKickLiveButton,
   kickLiveStatus,
@@ -137,6 +138,7 @@ attachLogging(client);
 
 const healthServer = http.createServer(async (req, res) => {
   try {
+    if (await handleKickTerrariaHttp(req, res, client)) return;
     if (await handleKickInteractiveHttp(req, res, client)) return;
     if (await handleMindustryHttp(req, res, client)) return;
     if (await handleTerrariaHttp(req, res, client)) return;
