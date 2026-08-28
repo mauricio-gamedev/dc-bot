@@ -61,7 +61,7 @@ def patch_texture_database_runtime_hook() -> None:
 
     extensions = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp"}
     install_pattern = re.compile(
-        r'(?m)^(?P<indent>[ \t]*)void\s+InstallCrashFixHooks\s*\(\s*\)\s*\{'
+        r'(?m)^(?P<indent>[ \t]*)(?:static\s+)?void\s+InstallCrashFixHooks\s*\(\s*\)\s*\{'
     )
 
     helper = r'''
@@ -114,6 +114,7 @@ static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int fo
 '''
 
     candidates: list[Path] = []
+    occurrence_context: list[str] = []
     for path in sorted(CPP_ROOT.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue
@@ -121,8 +122,14 @@ static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int fo
             text = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             continue
-        if "InstallCrashFixHooks" in text and "shadowhook_hook_sym_name" in text:
+        if "InstallCrashFixHooks" in text:
             candidates.append(path)
+            index = text.find("InstallCrashFixHooks")
+            start = max(0, text.rfind("\n", 0, max(0, index - 300)))
+            end = text.find("\n", min(len(text), index + 600))
+            if end == -1:
+                end = min(len(text), index + 600)
+            occurrence_context.append(f"{path}:\n{text[start:end].strip()}")
 
     for path in candidates:
         text = path.read_text(encoding="utf-8-sig")
@@ -144,8 +151,11 @@ static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int fo
         print(f"Patched runtime TextureDatabaseRuntime::Load hook in {path}")
         return
 
+    print("InstallCrashFixHooks source candidates:")
+    for snippet in occurrence_context:
+        print("\n---\n" + snippet)
     raise SystemExit(
-        "Unable to locate InstallCrashFixHooks with ShadowHook support for texture DB override"
+        "Unable to match InstallCrashFixHooks definition for texture DB override"
     )
 
 
