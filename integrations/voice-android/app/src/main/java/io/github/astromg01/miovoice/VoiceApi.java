@@ -59,12 +59,17 @@ final class VoiceApi {
         }
 
         static Config normal() {
-            return new Config(0, new JSONObject()
-                .put("preset", "normal")
-                .put("label", "Normal")
-                .put("intensity", 70)
-                .put("mix", 0.7)
-                .put("dsp", new JSONObject()), 1000);
+            try {
+                JSONObject value = new JSONObject();
+                value.put("preset", "normal");
+                value.put("label", "Normal");
+                value.put("intensity", 70);
+                value.put("mix", 0.7);
+                value.put("dsp", new JSONObject());
+                return new Config(0, value, 1000);
+            } catch (Exception impossible) {
+                throw new IllegalStateException(impossible);
+            }
         }
     }
 
@@ -96,12 +101,13 @@ final class VoiceApi {
         request("POST", "/voice/report", token, body);
     }
 
-    private static JSONObject deviceReport(String route) {
-        return new JSONObject()
-            .put("deviceName", Build.MANUFACTURER + " " + Build.MODEL)
-            .put("androidVersion", Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")")
-            .put("engine", "mio-dsp-java-v1")
-            .put("route", route);
+    private static JSONObject deviceReport(String route) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("deviceName", Build.MANUFACTURER + " " + Build.MODEL);
+        body.put("androidVersion", Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
+        body.put("engine", "mio-dsp-java-v1");
+        body.put("route", route);
+        return body;
     }
 
     private static JSONObject request(String method, String path, String token, JSONObject body) throws Exception {
