@@ -54,6 +54,7 @@ public final class VoiceService extends Service {
             .putString(MainActivity.KEY_STATUS, "parado")
             .putBoolean(MainActivity.KEY_VAD_ACTIVE, false)
             .putInt(MainActivity.KEY_VAD_CONFIDENCE, 0)
+            .putBoolean(MainActivity.KEY_NEURAL_READY, false)
             .apply();
         super.onDestroy();
     }
@@ -86,14 +87,23 @@ public final class VoiceService extends Service {
                 }
 
                 int volume = prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55);
-                int cleanup = prefs.getInt(MainActivity.KEY_CLEANUP, 82);
                 boolean vadEnabled = prefs.getBoolean(MainActivity.KEY_VAD_ENABLED, true);
                 boolean vadActive = engine.isVoiceDetected();
                 int vadConfidence = engine.getVoiceConfidence();
-                updateNotification(
-                    "Ativo • " + config.label + " • efeito " + config.intensity + "% • vol " + volume + "% • "
-                        + (vadEnabled ? (vadActive ? "voz " + vadConfidence + "%" : "silêncio") : "VAD off")
-                );
+                boolean neuralEnabled = prefs.getBoolean(MainActivity.KEY_NEURAL_ENABLED, false);
+                boolean neuralReady = engine.isNeuralReady();
+                String neuralStatus = engine.getNeuralStatus();
+                int neuralLatency = engine.getNeuralLatencyMs();
+
+                String notificationText;
+                if (neuralEnabled) {
+                    notificationText = "Ativo • neural • " + neuralStatus
+                        + " • " + (vadEnabled ? (vadActive ? "voz " + vadConfidence + "%" : "silêncio") : "VAD off");
+                } else {
+                    notificationText = "Ativo • " + config.label + " • efeito " + config.intensity + "% • vol " + volume + "% • "
+                        + (vadEnabled ? (vadActive ? "voz " + vadConfidence + "%" : "silêncio") : "VAD off");
+                }
+                updateNotification(notificationText);
 
                 String route = detectRoute();
                 int latency = engine.getEstimatedLatencyMs();
@@ -104,6 +114,11 @@ public final class VoiceService extends Service {
                     .putInt(MainActivity.KEY_LATENCY, latency)
                     .putBoolean(MainActivity.KEY_VAD_ACTIVE, vadEnabled && vadActive)
                     .putInt(MainActivity.KEY_VAD_CONFIDENCE, vadEnabled ? vadConfidence : 0)
+                    .putBoolean(MainActivity.KEY_NEURAL_READY, neuralEnabled && neuralReady)
+                    .putString(MainActivity.KEY_NEURAL_STATUS, neuralStatus)
+                    .putInt(MainActivity.KEY_NEURAL_LATENCY, neuralEnabled ? neuralLatency : -1)
+                    .putInt(MainActivity.KEY_NEURAL_INFERENCE, neuralEnabled ? engine.getNeuralInferenceMs() : -1)
+                    .putInt(MainActivity.KEY_NEURAL_DROPS, neuralEnabled ? engine.getNeuralDroppedChunks() : 0)
                     .apply();
 
                 reportCounter++;
@@ -135,9 +150,23 @@ public final class VoiceService extends Service {
         int volume = Math.max(20, Math.min(100, prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55)));
         int cleanup = Math.max(0, Math.min(100, prefs.getInt(MainActivity.KEY_CLEANUP, 82)));
         boolean vad = prefs.getBoolean(MainActivity.KEY_VAD_ENABLED, true);
+        int focus = Math.max(0, Math.min(100, prefs.getInt(MainActivity.KEY_VAD_FOCUS, 78)));
+        boolean neural = prefs.getBoolean(MainActivity.KEY_NEURAL_ENABLED, false);
+        String voiceName = prefs.getString(MainActivity.KEY_NEURAL_VOICE_NAME, "Voz RVC");
+        int neuralPitch = Math.max(-12, Math.min(12, prefs.getInt(MainActivity.KEY_NEURAL_PITCH, 0)));
+
         engine.setMonitorVolume(volume / 100f);
         engine.setCleanupStrength(cleanup / 100f);
         engine.setVadEnabled(vad);
+        engine.setVadFocus(focus / 100f);
+        engine.configureNeural(
+            neural,
+            NeuralVoiceStore.file(this, NeuralVoiceStore.HUBERT).getAbsolutePath(),
+            NeuralVoiceStore.file(this, NeuralVoiceStore.RMVPE).getAbsolutePath(),
+            NeuralVoiceStore.file(this, NeuralVoiceStore.SYNTH).getAbsolutePath(),
+            voiceName,
+            neuralPitch
+        );
     }
 
     private String detectRoute() {
