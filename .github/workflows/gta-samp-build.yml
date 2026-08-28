@@ -78,9 +78,6 @@ jobs:
             rsync -a "$ROOT/" app/src/main/cpp/
           fi
 
-          # The bundled source was authored on a case-insensitive filesystem.
-          # Recreate case-only aliases as symlinks, not copies. Copies make clang
-          # treat the same header as two different files and can redefine classes.
           if [[ ! -e "$EXPECTED" ]]; then
             ACTUAL="$(find app/src/main/cpp/samp/gui/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
             if [[ -n "$ACTUAL" ]]; then
@@ -98,8 +95,6 @@ jobs:
           test -f "$EXPECTED"
           test -f "$RGBA_EXPECTED"
 
-          # CMake links and exports these BASS shared libraries from vendor/bass.
-          # Keeping second copies under jniLibs makes AGP fail mergeDebugNativeLibs.
           rm -f \
             app/src/main/jniLibs/arm64-v8a/libbass.so \
             app/src/main/jniLibs/arm64-v8a/libbass_ssl.so
@@ -111,81 +106,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          base = Path("app/src/main/java/com/rockstargames/oswrapper/GameActivityBase.java")
-          text = base.read_text(encoding="utf-8")
-          old = 'File gameDir = new File(documentsDir, "VICE");'
-          new = 'File gameDir = new File(documentsDir, "GTA");'
-          if old not in text:
-              raise SystemExit("Expected VICE cache path not found in GameActivityBase.java")
-          base.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          main = Path("app/src/main/java/com/gta/launcher/activity/MainActivity.java")
-          text = main.read_text(encoding="utf-8")
-
-          import_anchor = "import android.widget.Toast;\n"
-          if "import java.io.File;" not in text:
-              if import_anchor not in text:
-                  raise SystemExit("Import anchor not found in MainActivity.java")
-              text = text.replace(import_anchor, import_anchor + "\nimport java.io.File;\n", 1)
-
-          old_method = '''    private void startGameIfReady() {
-              if (storagePermissionGranted) {
-                  startGame();
-              } else {
-                  Toast.makeText(this, "Нет доступа к хранилищу. Игра не может быть запущена.", Toast.LENGTH_LONG).show();
-              }
-          }
-          '''
-          new_method = '''    private void startGameIfReady() {
-              if (!storagePermissionGranted) {
-                  Toast.makeText(this, "Sem acesso ao armazenamento. O jogo não pode iniciar.", Toast.LENGTH_LONG).show();
-                  return;
-              }
-
-              File gtaDir = new File(Environment.getExternalStorageDirectory(), "GTA");
-              File[] gtaEntries = gtaDir.listFiles();
-              if (!gtaDir.isDirectory() || gtaEntries == null || gtaEntries.length == 0) {
-                  Log.e("MainActivity", "GTA data missing: " + gtaDir.getAbsolutePath());
-                  Toast.makeText(
-                          this,
-                          "Arquivos do GTA não encontrados. Coloque os dados do jogo em /storage/emulated/0/GTA/",
-                          Toast.LENGTH_LONG
-                  ).show();
-                  return;
-              }
-
-              startGame();
-          }
-          '''
-          if old_method not in text:
-              raise SystemExit("startGameIfReady method anchor not found")
-          text = text.replace(old_method, new_method, 1)
-
-          old_click = '''                        if (storagePermissionGranted) {
-                              startGame();
-                          } else {
-                              checkAndRequestStoragePermission();
-                          }
-          '''
-          new_click = '''                        if (storagePermissionGranted) {
-                              startGameIfReady();
-                          } else {
-                              checkAndRequestStoragePermission();
-                          }
-          '''
-          if old_click not in text:
-              raise SystemExit("Start button anchor not found")
-          text = text.replace(old_click, new_click, 1)
-          main.write_text(text, encoding="utf-8")
-
-          print("Patched cache root to /storage/emulated/0/GTA/ and added launcher preflight.")
-          PY
-
-          grep -n 'new File(documentsDir, "GTA")' app/src/main/java/com/rockstargames/oswrapper/GameActivityBase.java
-          grep -n 'Arquivos do GTA não encontrados' app/src/main/java/com/gta/launcher/activity/MainActivity.java
+          python3 ../integrations/gta/patch_runtime.py
 
       - name: Use Java 17
         uses: actions/setup-java@v4
