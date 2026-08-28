@@ -35,6 +35,10 @@ function defaultProfile(userId) {
     kickOAuthScope: '',
     kickOAuthLinkedAt: 0,
     kickSubscriptionId: '',
+    voiceLinkHash: '',
+    voiceLinkedAt: 0,
+    voicePreset: 'normal',
+    voiceIntensity: 70,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -52,7 +56,8 @@ function normalizeProfile(userId, raw = {}) {
   for (const key of [
     'xp', 'coins', 'reputation', 'messages', 'level', 'dailyStreak',
     'lastXpAt', 'lastDailyAt', 'lastRepGivenAt', 'missionMessages', 'liveAttendanceCount',
-    'eventParticipationCount', 'mindustryLinkedAt', 'kickOAuthLinkedAt', 'createdAt', 'updatedAt',
+    'eventParticipationCount', 'mindustryLinkedAt', 'kickOAuthLinkedAt', 'voiceLinkedAt',
+    'voiceIntensity', 'createdAt', 'updatedAt',
   ]) {
     const value = Number(data[key]);
     data[key] = Number.isFinite(value) ? value : base[key];
@@ -62,6 +67,8 @@ function normalizeProfile(userId, raw = {}) {
   data.eventParticipationCount = Math.max(0, Math.floor(data.eventParticipationCount));
   data.mindustryLinkedAt = Math.max(0, Math.floor(data.mindustryLinkedAt));
   data.kickOAuthLinkedAt = Math.max(0, Math.floor(data.kickOAuthLinkedAt));
+  data.voiceLinkedAt = Math.max(0, Math.floor(data.voiceLinkedAt));
+  data.voiceIntensity = Math.min(100, Math.max(0, Math.round(data.voiceIntensity)));
   data.title = typeof data.title === 'string' && data.title.length <= 80 ? data.title : base.title;
   data.ownedTitles = normalizeStringArray(data.ownedTitles);
   data.achievements = normalizeStringArray(data.achievements);
@@ -85,6 +92,12 @@ function normalizeProfile(userId, raw = {}) {
   data.kickSubscriptionId = typeof data.kickSubscriptionId === 'string' && data.kickSubscriptionId.length <= 160
     ? data.kickSubscriptionId
     : '';
+  data.voiceLinkHash = typeof data.voiceLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.voiceLinkHash)
+    ? data.voiceLinkHash.toLowerCase()
+    : '';
+  data.voicePreset = typeof data.voicePreset === 'string' && data.voicePreset.length <= 40
+    ? data.voicePreset
+    : base.voicePreset;
   data.missionDate = typeof data.missionDate === 'string' ? data.missionDate.slice(0, 16) : '';
   data.missionDaily = Boolean(data.missionDaily);
   data.missionRep = Boolean(data.missionRep);
@@ -199,6 +212,10 @@ function serializeProfile(profile) {
     kickOAuthScope: profile.kickOAuthScope,
     kickOAuthLinkedAt: profile.kickOAuthLinkedAt,
     kickSubscriptionId: profile.kickSubscriptionId,
+    voiceLinkHash: profile.voiceLinkHash,
+    voiceLinkedAt: profile.voiceLinkedAt,
+    voicePreset: profile.voicePreset,
+    voiceIntensity: profile.voiceIntensity,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
