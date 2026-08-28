@@ -25,7 +25,8 @@ final class AudioEngine {
     private final Context context;
     private final AtomicReference<VoiceApi.Config> config = new AtomicReference<>(VoiceApi.Config.normal());
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final PitchShifter pitchShifter = new PitchShifter(4096, 2048);
+    private final PitchShifter pitchShifter = new PitchShifter(2048, 1024);
+    private final VoiceActivityDetector voiceActivityDetector = new VoiceActivityDetector();
     private final float[] reverbBuffer = new float[7200];
 
     private AudioRecord recorder;
@@ -37,9 +38,13 @@ final class AudioEngine {
     private volatile int estimatedLatencyMs = -1;
     private volatile float monitorVolume = 0.55f;
     private volatile float cleanupStrength = 0.80f;
+    private volatile boolean vadEnabled = true;
+    private volatile boolean voiceDetected = false;
+    private volatile int voiceConfidence = 0;
 
     private float lowState = 0f;
     private float outputLowpassState = 0f;
+    private float speechBandState = 0f;
     private float robotPhase = 0f;
     private int reverbIndex = 0;
 
@@ -71,8 +76,24 @@ final class AudioEngine {
         cleanupStrength = clamp(value, 0f, 1f);
     }
 
+    void setVadEnabled(boolean enabled) {
+        vadEnabled = enabled;
+        if (!enabled) {
+            voiceDetected = false;
+            voiceConfidence = 0;
+        }
+    }
+
     boolean isRunning() {
         return running.get();
+    }
+
+    boolean isVoiceDetected() {
+        return voiceDetected;
+    }
+
+    int getVoiceConfidence() {
+        return voiceConfidence;
     }
 
     int getEstimatedLatencyMs() {
@@ -98,15 +119,14 @@ final class AudioEngine {
                 throw new IllegalStateException("microphone_permission_missing");
             }
 
+            AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             int minIn = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING);
             int minOut = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING);
-            int blockSamples = 480;
-            int inputBuffer = Math.max(minIn * 2, blockSamples * 8);
-            int outputBuffer = Math.max(minOut * 2, blockSamples * 8);
+            int blockSamples = resolveBlockSamples(audioManager);
+            int targetBufferBytes = blockSamples * 2 * 4;
+            int inputBuffer = Math.max(minIn, targetBufferBytes);
+            int outputBuffer = Math.max(minOut, targetBufferBytes);
 
-            // VOICE_COMMUNICATION gives Samsung/Android audio policy the best chance
-            // to attach its native voice-call AEC/NS path. Fall back safely on devices
-            // where that source cannot initialize.
             recorder = createRecorder(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputBuffer);
             if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
                 recorder.release();
@@ -116,19 +136,14 @@ final class AudioEngine {
                 throw new IllegalStateException("audio_record_init_failed");
             }
 
-            player = new AudioTrack.Builder()
-                .setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build())
-                .setAudioFormat(new AudioFormat.Builder()
-                    .setEncoding(ENCODING)
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(CHANNEL_OUT)
-                    .build())
-                .setBufferSizeInBytes(outputBuffer)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build();
+            player = createPlayer(outputBuffer, true);
+            if (player.getState() != AudioTrack.STATE_INITIALIZED) {
+                player.release();
+                player = createPlayer(outputBuffer, false);
+            }
+            if (player.getState() != AudioTrack.STATE_INITIALIZED) {
+                throw new IllegalStateException("audio_track_init_failed");
+            }
             player.setVolume(monitorVolume);
 
             if (NoiseSuppressor.isAvailable()) {
@@ -141,14 +156,11 @@ final class AudioEngine {
                 if (acousticEchoCanceler != null) acousticEchoCanceler.setEnabled(true);
             }
 
-            // Some devices auto-boost the mic in communication mode. That makes room
-            // noise louder and fights our gate, so disable platform AGC when possible.
             if (AutomaticGainControl.isAvailable()) {
                 automaticGainControl = AutomaticGainControl.create(recorder.getAudioSessionId());
                 if (automaticGainControl != null) automaticGainControl.setEnabled(false);
             }
 
-            AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 
             short[] input = new short[blockSamples];
@@ -156,8 +168,10 @@ final class AudioEngine {
             recorder.startRecording();
             player.play();
 
-            int bufferLatency = Math.max(inputBuffer, outputBuffer) / 2 * 1000 / SAMPLE_RATE;
-            estimatedLatencyMs = bufferLatency + pitchShifter.getMaxLatencyMs(SAMPLE_RATE);
+            int outputFrames = Math.max(blockSamples * 2, player.getBufferSizeInFrames());
+            int outputQueueMs = Math.round(outputFrames * 1000f / SAMPLE_RATE);
+            int blockGuardMs = Math.round(blockSamples * 2f * 1000f / SAMPLE_RATE);
+            estimatedLatencyMs = outputQueueMs + blockGuardMs + pitchShifter.getMaxLatencyMs(SAMPLE_RATE);
 
             while (running.get()) {
                 int read = recorder.read(input, 0, input.length, AudioRecord.READ_BLOCKING);
@@ -172,6 +186,15 @@ final class AudioEngine {
         }
     }
 
+    private int resolveBlockSamples(AudioManager manager) {
+        try {
+            String value = manager.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
+            int nativeFrames = Integer.parseInt(value == null ? "0" : value);
+            if (nativeFrames >= 120 && nativeFrames <= 480) return nativeFrames;
+        } catch (Exception ignored) {}
+        return 240;
+    }
+
     private AudioRecord createRecorder(int source, int inputBuffer) {
         return new AudioRecord.Builder()
             .setAudioSource(source)
@@ -184,52 +207,73 @@ final class AudioEngine {
             .build();
     }
 
+    private AudioTrack createPlayer(int outputBuffer, boolean lowLatency) {
+        AudioTrack.Builder builder = new AudioTrack.Builder()
+            .setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build())
+            .setAudioFormat(new AudioFormat.Builder()
+                .setEncoding(ENCODING)
+                .setSampleRate(SAMPLE_RATE)
+                .setChannelMask(CHANNEL_OUT)
+                .build())
+            .setBufferSizeInBytes(outputBuffer)
+            .setTransferMode(AudioTrack.MODE_STREAM);
+        if (lowLatency) builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
+        return builder.build();
+    }
+
     private void process(short[] input, short[] output, int length, VoiceApi.Config cfg) {
         float strength = clamp((float) cfg.mix, 0f, 1f);
         float cleanup = cleanupStrength;
+        VadResult vad = voiceActivityDetector.analyze(input, length, cleanup, vadEnabled);
+        voiceDetected = vad.speech;
+        voiceConfidence = vad.confidence;
+
         float formant = (float) cfg.formant * strength;
         float bassGain = dbToGain((float) cfg.bass * strength - formant * 0.7f);
         float presenceGain = dbToGain((float) cfg.presence * strength + formant * 0.9f);
         float drive = clamp((float) cfg.drive * strength, 0f, 1f);
         float robot = clamp((float) cfg.robot * strength, 0f, 1f);
-        float reverb = clamp((float) cfg.reverb * strength, 0f, 0.55f);
+        float reverb = clamp((float) cfg.reverb * strength, 0f, 0.50f);
         float pitch = (float) cfg.pitch * strength;
         boolean pitchActive = Math.abs(pitch) >= 0.03f;
 
-        // Stronger cleanup increases the adaptive open threshold and lowers the
-        // residual gain while the user is not speaking. Hysteresis prevents chatter.
-        float baseOpenThreshold = 0.007f + cleanup * 0.011f;
-        float baseCloseThreshold = 0.0045f + cleanup * 0.0075f;
-        float floorGain = 0.02f + (1f - cleanup) * 0.30f;
+        float baseOpenThreshold = 0.0065f + cleanup * 0.010f;
+        float baseCloseThreshold = 0.0040f + cleanup * 0.0065f;
+        float floorGain = 0.006f + (1f - cleanup) * 0.22f;
+        float speechBandAlpha = clamp(0.68f - cleanup * 0.15f, 0.50f, 0.68f);
 
         for (int i = 0; i < length; i++) {
             float raw = input[i] / 32768f;
 
-            // ~120 Hz high-pass removes handling/room rumble before the detector.
             float highPassed = 0.985f * (highPassState + raw - highPassPreviousInput);
             highPassPreviousInput = raw;
             highPassState = highPassed;
 
-            float absolute = Math.abs(highPassed);
-            float envelopeRate = absolute > inputEnvelope ? 0.075f : 0.004f;
+            speechBandState += speechBandAlpha * (highPassed - speechBandState);
+            float filtered = speechBandState;
+
+            float absolute = Math.abs(filtered);
+            float envelopeRate = absolute > inputEnvelope ? 0.09f : 0.004f;
             inputEnvelope += (absolute - inputEnvelope) * envelopeRate;
 
-            // Learn the room floor slowly only while the signal is reasonably quiet.
-            if (inputEnvelope < 0.07f) {
-                noiseFloor += (inputEnvelope - noiseFloor) * 0.00012f;
-                noiseFloor = clamp(noiseFloor, 0.0015f, 0.035f);
+            if (!vad.speech && inputEnvelope < 0.06f) {
+                noiseFloor += (inputEnvelope - noiseFloor) * 0.00010f;
+                noiseFloor = clamp(noiseFloor, 0.0012f, 0.030f);
             }
 
-            float dynamicOpen = Math.max(baseOpenThreshold, noiseFloor * (1.65f + cleanup * 1.25f));
-            float dynamicClose = Math.max(baseCloseThreshold, noiseFloor * (1.30f + cleanup * 0.80f));
+            float dynamicOpen = Math.max(baseOpenThreshold, noiseFloor * (1.75f + cleanup * 1.25f));
+            float dynamicClose = Math.max(baseCloseThreshold, noiseFloor * (1.35f + cleanup * 0.75f));
             boolean currentlyOpen = gateGain > 0.45f;
-            float gateTarget = currentlyOpen
-                ? (inputEnvelope > dynamicClose ? 1f : floorGain)
-                : (inputEnvelope > dynamicOpen ? 1f : floorGain);
-            float gateRate = gateTarget > gateGain ? 0.085f : 0.00055f;
+            boolean envelopeOpen = currentlyOpen ? inputEnvelope > dynamicClose : inputEnvelope > dynamicOpen;
+            boolean shouldOpen = vadEnabled ? (vad.speech || envelopeOpen && vad.confidence >= 18) : envelopeOpen;
+            float gateTarget = shouldOpen ? 1f : floorGain;
+            float gateRate = gateTarget > gateGain ? 0.16f : 0.0010f;
             gateGain += (gateTarget - gateGain) * gateRate;
 
-            float cleaned = highPassed * gateGain;
+            float cleaned = filtered * gateGain;
             float x = pitchShifter.process(cleaned, pitch);
 
             lowState += 0.055f * (x - lowState);
@@ -250,28 +294,29 @@ final class AudioEngine {
 
             if (reverb > 0.001f) {
                 float delayed = reverbBuffer[reverbIndex];
-                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.22f, -1f, 1f);
+                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.18f, -1f, 1f);
                 reverbIndex++;
                 if (reverbIndex >= reverbBuffer.length) reverbIndex = 0;
                 x = x * (1f - reverb) + delayed * reverb;
             }
 
-            // Adaptive post-pitch damping: stronger for large pitch shifts where the
-            // time-domain shifter can occasionally create a narrow whistle.
             if (pitchActive) {
-                float damping = clamp(0.72f - Math.abs(pitch) * 0.025f, 0.54f, 0.72f);
+                float damping = clamp(0.70f - Math.abs(pitch) * 0.028f, 0.50f, 0.70f);
                 outputLowpassState += damping * (x - outputLowpassState);
                 x = outputLowpassState;
             } else {
                 outputLowpassState = x;
             }
 
-            x = softLimit(x * 0.90f);
+            x = softLimit(x * 0.86f);
             output[i] = (short) Math.round(x * 32767f);
         }
     }
 
     private void releaseAudio() {
+        voiceDetected = false;
+        voiceConfidence = 0;
+
         try {
             if (automaticGainControl != null) automaticGainControl.release();
         } catch (Exception ignored) {}
@@ -320,6 +365,66 @@ final class AudioEngine {
 
     private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static final class VadResult {
+        final boolean speech;
+        final int confidence;
+
+        VadResult(boolean speech, int confidence) {
+            this.speech = speech;
+            this.confidence = confidence;
+        }
+    }
+
+    private static final class VoiceActivityDetector {
+        private float noiseRms = 0.004f;
+        private int hangoverBlocks = 0;
+        private int lastConfidence = 0;
+
+        VadResult analyze(short[] input, int length, float cleanup, boolean enabled) {
+            if (!enabled || length <= 0) return new VadResult(false, 0);
+
+            double energy = 0.0;
+            float peak = 0f;
+            for (int i = 0; i < length; i++) {
+                float sample = input[i] / 32768f;
+                energy += sample * sample;
+                peak = Math.max(peak, Math.abs(sample));
+            }
+
+            float rms = (float) Math.sqrt(energy / length);
+            float currentNoise = Math.max(0.0008f, noiseRms);
+            float snrDb = (float) (20.0 * Math.log10((rms + 0.00001f) / (currentNoise + 0.00001f)));
+            float thresholdDb = 4.0f + cleanup * 4.0f;
+            float minEnergy = 0.0030f + cleanup * 0.0025f;
+            boolean candidate = rms > minEnergy
+                && snrDb > thresholdDb
+                && peak > currentNoise * (2.0f + cleanup * 0.8f);
+
+            if (!candidate && hangoverBlocks == 0) {
+                float learnRate = rms < noiseRms ? 0.025f : 0.0020f;
+                noiseRms += (rms - noiseRms) * learnRate;
+                noiseRms = clamp(noiseRms, 0.0010f, 0.040f);
+            }
+
+            int confidence = Math.round(clamp((snrDb - thresholdDb + 5f) / 16f, 0f, 1f) * 100f);
+            if (candidate) {
+                int blocksFor180Ms = Math.max(2, Math.round(0.18f * SAMPLE_RATE / length));
+                hangoverBlocks = blocksFor180Ms;
+                lastConfidence = Math.max(35, confidence);
+                return new VadResult(true, lastConfidence);
+            }
+
+            if (hangoverBlocks > 0) {
+                hangoverBlocks--;
+                lastConfidence = Math.max(18, Math.round(lastConfidence * 0.92f));
+                return new VadResult(true, lastConfidence);
+            }
+
+            lastConfidence = Math.max(0, Math.round(lastConfidence * 0.70f));
+            return new VadResult(false, Math.min(confidence, lastConfidence));
+        }
     }
 
     private static final class PitchShifter {
