@@ -105,9 +105,75 @@ jobs:
           git commit -m "chore(mindustry): refresh Android JAR [skip ci]"
           git push
 
+  build-voice-android:
+    needs: build-mindustry-android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and build tools
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Build Mio Voice Android APK
+        working-directory: integrations/voice-android
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify Mio Voice APK
+        run: |
+          APK="integrations/voice-android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -q "AndroidManifest.xml"
+          unzip -l "$APK" | grep -q "classes.dex"
+
+      - name: Upload Mio Voice Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MioVoice-Android
+          path: integrations/voice-android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Synchronize direct-download APK on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp integrations/voice-android/app/build/outputs/apk/debug/app-debug.apk /tmp/MioVoice.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp /tmp/MioVoice.apk downloads/MioVoice.apk
+          git add downloads/MioVoice.apk
+          if git diff --cached --quiet; then
+            echo "Direct-download APK already synchronized."
+            exit 0
+          fi
+          git commit -m "chore(voice): refresh Android APK [skip ci]"
+          git push origin main
+
   verify-render-deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [validate, validate-visual-origin, build-mindustry-android]
+    needs: [validate, validate-visual-origin, build-mindustry-android, build-voice-android]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
