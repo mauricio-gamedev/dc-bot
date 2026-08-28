@@ -6,6 +6,7 @@ MAIN_ACTIVITY = Path("app/src/main/java/com/gta/launcher/activity/MainActivity.j
 SAMP_ACTIVITY = Path("app/src/main/java/com/gta/game/SAMP.java")
 GTASA_ACTIVITY = Path("app/src/main/java/com/gta/game/GTASA.java")
 GAME_NATIVE = Path("app/src/main/java/com/rockstargames/oswrapper/GameNative.java")
+GAME_THREAD = Path("app/src/main/java/com/rockstargames/oswrapper/GameThread.java")
 STARTUP_TRACE = Path("app/src/main/java/com/gta/game/StartupTrace.java")
 
 
@@ -31,14 +32,23 @@ def write_startup_trace() -> None:
     STARTUP_TRACE.write_text(
         r'''package com.gta.game;
 
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
+import android.content.Context;
+import android.os.Build;
+
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 public final class StartupTrace {
     private static final File LOG_FILE = new File("/storage/emulated/0/GTA/samp-startup.log");
+    private static final File EXIT_INFO_FILE = new File("/storage/emulated/0/GTA/samp-exit-info.log");
+    private static final File EXIT_TRACE_FILE = new File("/storage/emulated/0/GTA/samp-exit-trace.txt");
 
     private StartupTrace() { }
 
@@ -56,15 +66,86 @@ public final class StartupTrace {
         write(stage + "\n" + sw, true);
     }
 
-    private static void write(String message, boolean append) {
+    public static synchronized void capturePreviousExit(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return;
+        }
+
         try {
-            File parent = LOG_FILE.getParentFile();
+            ActivityManager activityManager =
+                    (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (activityManager == null) {
+                writeStandalone(EXIT_INFO_FILE, "ActivityManager unavailable\n", false);
+                return;
+            }
+
+            List<ApplicationExitInfo> exits =
+                    activityManager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 5);
+            if (exits == null || exits.isEmpty()) {
+                writeStandalone(EXIT_INFO_FILE, "No historical process exit info available\n", false);
+                return;
+            }
+
+            StringBuilder report = new StringBuilder();
+            report.append("Captured at ").append(System.currentTimeMillis()).append('\n');
+            int index = 0;
+            for (ApplicationExitInfo info : exits) {
+                report.append("\n#").append(index++).append('\n');
+                report.append("timestamp=").append(info.getTimestamp()).append('\n');
+                report.append("process=").append(info.getProcessName()).append('\n');
+                report.append("reason=").append(info.getReason()).append('\n');
+                report.append("status=").append(info.getStatus()).append('\n');
+                report.append("importance=").append(info.getImportance()).append('\n');
+                report.append("pss=").append(info.getPss()).append('\n');
+                report.append("rss=").append(info.getRss()).append('\n');
+                report.append("description=").append(info.getDescription()).append('\n');
+            }
+            writeStandalone(EXIT_INFO_FILE, report.toString(), false);
+
+            ApplicationExitInfo newest = exits.get(0);
+            try (InputStream trace = newest.getTraceInputStream()) {
+                if (trace != null) {
+                    File parent = EXIT_TRACE_FILE.getParentFile();
+                    if (parent != null && !parent.exists()) {
+                        parent.mkdirs();
+                    }
+                    try (FileOutputStream out = new FileOutputStream(EXIT_TRACE_FILE, false)) {
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = trace.read(buffer)) != -1) {
+                            out.write(buffer, 0, read);
+                        }
+                        out.flush();
+                    }
+                } else if (EXIT_TRACE_FILE.exists()) {
+                    EXIT_TRACE_FILE.delete();
+                }
+            }
+        } catch (Throwable t) {
+            writeStandalone(
+                    EXIT_INFO_FILE,
+                    "capturePreviousExit failed: " + t.getClass().getName() + ": " + t.getMessage() + "\n",
+                    false
+            );
+        }
+    }
+
+    private static void write(String message, boolean append) {
+        writeStandalone(
+                LOG_FILE,
+                System.currentTimeMillis() + " | " + message + "\n",
+                append
+        );
+    }
+
+    private static void writeStandalone(File target, String text, boolean append) {
+        try {
+            File parent = target.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
             }
-            try (FileOutputStream out = new FileOutputStream(LOG_FILE, append)) {
-                String line = System.currentTimeMillis() + " | " + message + "\n";
-                out.write(line.getBytes(StandardCharsets.UTF_8));
+            try (FileOutputStream out = new FileOutputStream(target, append)) {
+                out.write(text.getBytes(StandardCharsets.UTF_8));
                 out.flush();
             }
         } catch (Throwable ignored) {
@@ -94,6 +175,13 @@ def patch_main_activity() -> None:
             r'\1\nimport com.gta.game.StartupTrace;\n',
             "MainActivity StartupTrace import",
         )
+
+    text = replace_once(
+        text,
+        r'(protected void onCreate\(Bundle savedInstanceState\) \{\s*super\.onCreate\(savedInstanceState\);)',
+        r'\1\n\n        StartupTrace.capturePreviousExit(this);',
+        "MainActivity previous exit capture",
+    )
 
     new_preflight = '''    private void startGameIfReady() {
         if (!storagePermissionGranted) {
@@ -246,6 +334,107 @@ def patch_game_native() -> None:
     GAME_NATIVE.write_text(text, encoding="utf-8")
 
 
+def patch_game_thread() -> None:
+    text = GAME_THREAD.read_text(encoding="utf-8")
+
+    if "import com.gta.game.StartupTrace;" not in text:
+        text = replace_once(
+            text,
+            r'(import android\.view\.SurfaceHolder;\s*)',
+            r'\1\nimport com.gta.game.StartupTrace;\n',
+            "GameThread StartupTrace import",
+        )
+
+    text = replace_once(
+        text,
+        r'(\s*private static ExecutorThread current;\s*)',
+        r'\1    private static boolean tracedFirstDraw = false;\n',
+        "GameThread first draw field",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnActivityCreated\(new GamePlatformServices\(activity, view\), firstInit\);',
+        r'\1StartupTrace.log("GameThread: implOnActivityCreated begin");'
+        r'\1GameNative.implOnActivityCreated(new GamePlatformServices(activity, view), firstInit);'
+        r'\1StartupTrace.log("GameThread: implOnActivityCreated returned");',
+        "GameThread activity created trace",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnInitialSetup\(deviceInfo, assets, finalNames, finalPaths\);',
+        r'\1StartupTrace.log("GameThread: implOnInitialSetup begin path=" + finalPaths[0]);'
+        r'\1GameNative.implOnInitialSetup(deviceInfo, assets, finalNames, finalPaths);'
+        r'\1StartupTrace.log("GameThread: implOnInitialSetup returned");',
+        "GameThread initial setup trace",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnSurfaceCreated\(\);',
+        r'\1StartupTrace.log("GameThread: implOnSurfaceCreated begin");'
+        r'\1GameNative.implOnSurfaceCreated();'
+        r'\1StartupTrace.log("GameThread: implOnSurfaceCreated returned");',
+        "GameThread surface created trace",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnSurfaceChanged\(surface, width, height\);',
+        r'\1StartupTrace.log("GameThread: implOnSurfaceChanged begin " + width + "x" + height);'
+        r'\1GameNative.implOnSurfaceChanged(surface, width, height);'
+        r'\1StartupTrace.log("GameThread: implOnSurfaceChanged returned");',
+        "GameThread surface changed trace",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnResume\(\);',
+        r'\1StartupTrace.log("GameThread: implOnResume begin");'
+        r'\1GameNative.implOnResume();'
+        r'\1StartupTrace.log("GameThread: implOnResume returned");',
+        "GameThread resume trace",
+    )
+
+    text = replace_once(
+        text,
+        r'(\s*)GameNative\.implOnDrawFrame\(f\);',
+        r'\1if (!GameThread.tracedFirstDraw) {'
+        r'\1    StartupTrace.log("GameThread: first implOnDrawFrame begin");'
+        r'\1}'
+        r'\1GameNative.implOnDrawFrame(f);'
+        r'\1if (!GameThread.tracedFirstDraw) {'
+        r'\1    StartupTrace.log("GameThread: first implOnDrawFrame returned");'
+        r'\1    GameThread.tracedFirstDraw = true;'
+        r'\1}',
+        "GameThread first draw trace",
+    )
+
+    text = replace_once(
+        text,
+        r'''        @Override
+        public void run\(\) \{
+            // FIX #2: removed useless try/catch InterruptedException — guardedRun\(\) doesn't throw it
+            guardedRun\(\);
+        \}''',
+        '''        @Override
+        public void run() {
+            StartupTrace.log("GameThread.ExecutorThread: run entered");
+            try {
+                guardedRun();
+                StartupTrace.log("GameThread.ExecutorThread: guardedRun returned");
+            } catch (RuntimeException | Error e) {
+                StartupTrace.logThrowable("GameThread.ExecutorThread: Java failure", e);
+                throw e;
+            }
+        }''',
+        "GameThread executor run trace",
+    )
+
+    GAME_THREAD.write_text(text, encoding="utf-8")
+
+
 if __name__ == "__main__":
     patch_base_activity()
     write_startup_trace()
@@ -253,15 +442,22 @@ if __name__ == "__main__":
     patch_gtasa()
     patch_samp()
     patch_game_native()
+    patch_game_thread()
 
     base_text = BASE_ACTIVITY.read_text(encoding="utf-8")
     main_text = MAIN_ACTIVITY.read_text(encoding="utf-8")
     samp_text = SAMP_ACTIVITY.read_text(encoding="utf-8")
     native_text = GAME_NATIVE.read_text(encoding="utf-8")
+    thread_text = GAME_THREAD.read_text(encoding="utf-8")
+    trace_text = STARTUP_TRACE.read_text(encoding="utf-8")
     assert 'new File(documentsDir, "GTA")' in base_text
     assert "Arquivos do GTA não encontrados" in main_text
     assert "StartupTrace.reset" in main_text
+    assert "capturePreviousExit" in main_text
     assert "initializeSAMP begin" in samp_text
     assert "loading libGame.so" in native_text
+    assert "implOnInitialSetup begin" in thread_text
+    assert "first implOnDrawFrame begin" in thread_text
+    assert "samp-exit-info.log" in trace_text
     assert STARTUP_TRACE.exists()
-    print("Patched runtime cache root, launcher preflight and on-device startup tracing successfully.")
+    print("Patched runtime cache root and deep on-device startup/native crash diagnostics successfully.")
