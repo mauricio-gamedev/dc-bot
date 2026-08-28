@@ -26,7 +26,8 @@ final class AudioEngine {
     private final AtomicReference<VoiceApi.Config> config = new AtomicReference<>(VoiceApi.Config.normal());
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final PitchShifter pitchShifter = new PitchShifter(2048, 1024);
-    private final VoiceActivityDetector voiceActivityDetector = new VoiceActivityDetector();
+    private final StrictVad strictVad;
+    private final NeuralStreamProcessor neuralProcessor;
     private final float[] reverbBuffer = new float[7200];
 
     private AudioRecord recorder;
@@ -39,8 +40,10 @@ final class AudioEngine {
     private volatile float monitorVolume = 0.55f;
     private volatile float cleanupStrength = 0.80f;
     private volatile boolean vadEnabled = true;
+    private volatile float vadFocus = 0.78f;
     private volatile boolean voiceDetected = false;
     private volatile int voiceConfidence = 0;
+    private volatile boolean disposed = false;
 
     private float lowState = 0f;
     private float outputLowpassState = 0f;
@@ -56,6 +59,8 @@ final class AudioEngine {
 
     AudioEngine(Context context) {
         this.context = context.getApplicationContext();
+        strictVad = new StrictVad();
+        neuralProcessor = new NeuralStreamProcessor(this.context);
     }
 
     void setConfig(VoiceApi.Config next) {
@@ -84,6 +89,21 @@ final class AudioEngine {
         }
     }
 
+    void setVadFocus(float value) {
+        vadFocus = clamp(value, 0f, 1f);
+    }
+
+    void configureNeural(
+        boolean enabled,
+        String hubertPath,
+        String rmvpePath,
+        String synthPath,
+        String label,
+        int transpose
+    ) {
+        neuralProcessor.configure(enabled, hubertPath, rmvpePath, synthPath, label, transpose);
+    }
+
     boolean isRunning() {
         return running.get();
     }
@@ -100,8 +120,32 @@ final class AudioEngine {
         return estimatedLatencyMs;
     }
 
+    boolean isNeuralEnabled() {
+        return neuralProcessor.isEnabled();
+    }
+
+    boolean isNeuralReady() {
+        return neuralProcessor.isReady();
+    }
+
+    String getNeuralStatus() {
+        return neuralProcessor.getStatus();
+    }
+
+    int getNeuralLatencyMs() {
+        return neuralProcessor.getEstimatedLatencyMs();
+    }
+
+    int getNeuralInferenceMs() {
+        return neuralProcessor.getLastInferenceMs();
+    }
+
+    int getNeuralDroppedChunks() {
+        return neuralProcessor.getDroppedChunks();
+    }
+
     void start() {
-        if (!running.compareAndSet(false, true)) return;
+        if (disposed || !running.compareAndSet(false, true)) return;
         thread = new Thread(this::audioLoop, "mio-voice-audio");
         thread.setPriority(Thread.MAX_PRIORITY);
         thread.start();
@@ -111,6 +155,15 @@ final class AudioEngine {
         running.set(false);
         if (thread != null) thread.interrupt();
         releaseAudio();
+        Thread current = thread;
+        if (current != null && current != Thread.currentThread()) {
+            try {
+                current.join(350);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        disposeProcessors();
     }
 
     private void audioLoop() {
@@ -168,16 +221,25 @@ final class AudioEngine {
             recorder.startRecording();
             player.play();
 
-            int outputFrames = Math.max(blockSamples * 2, player.getBufferSizeInFrames());
-            int outputQueueMs = Math.round(outputFrames * 1000f / SAMPLE_RATE);
-            int blockGuardMs = Math.round(blockSamples * 2f * 1000f / SAMPLE_RATE);
-            estimatedLatencyMs = outputQueueMs + blockGuardMs + pitchShifter.getMaxLatencyMs(SAMPLE_RATE);
+            long totalWrittenFrames = 0L;
+            int blockMs = Math.max(1, Math.round(blockSamples * 1000f / SAMPLE_RATE));
+            estimatedLatencyMs = blockMs * 2;
 
             while (running.get()) {
                 int read = recorder.read(input, 0, input.length, AudioRecord.READ_BLOCKING);
                 if (read <= 0) continue;
-                process(input, output, read, config.get());
-                player.write(output, 0, read, AudioTrack.WRITE_BLOCKING);
+                VoiceApi.Config currentConfig = config.get();
+                process(input, output, read, currentConfig);
+                int written = player.write(output, 0, read, AudioTrack.WRITE_BLOCKING);
+                if (written > 0) {
+                    totalWrittenFrames += written;
+                    long playedFrames = player.getPlaybackHeadPosition() & 0xffffffffL;
+                    long queuedFrames = Math.max(0L, totalWrittenFrames - playedFrames);
+                    int queuedMs = Math.round(queuedFrames * 1000f / SAMPLE_RATE);
+                    float pitch = (float) currentConfig.pitch * clamp((float) currentConfig.mix, 0f, 1f);
+                    int pitchMs = Math.abs(pitch) >= 0.03f ? pitchShifter.getMaxLatencyMs(SAMPLE_RATE) : 0;
+                    estimatedLatencyMs = Math.max(blockMs, queuedMs + blockMs + pitchMs);
+                }
             }
         } catch (Exception error) {
             running.set(false);
@@ -227,9 +289,16 @@ final class AudioEngine {
     private void process(short[] input, short[] output, int length, VoiceApi.Config cfg) {
         float strength = clamp((float) cfg.mix, 0f, 1f);
         float cleanup = cleanupStrength;
-        VadResult vad = voiceActivityDetector.analyze(input, length, cleanup, vadEnabled);
+        StrictVad.Result vad = strictVad.analyze(input, length, vadFocus, vadEnabled);
         voiceDetected = vad.speech;
         voiceConfidence = vad.confidence;
+
+        // Native NS/AEC has already processed AudioRecord. The neural path is kept
+        // separate from the Lite DSP chain so the RVC model does not inherit pitch,
+        // robot or reverb artifacts from the lightweight preset.
+        if (neuralProcessor.process(input, output, length, !vadEnabled || vad.speech)) {
+            return;
+        }
 
         float formant = (float) cfg.formant * strength;
         float bassGain = dbToGain((float) cfg.bass * strength - formant * 0.7f);
@@ -242,7 +311,7 @@ final class AudioEngine {
 
         float baseOpenThreshold = 0.0065f + cleanup * 0.010f;
         float baseCloseThreshold = 0.0040f + cleanup * 0.0065f;
-        float floorGain = 0.006f + (1f - cleanup) * 0.22f;
+        float floorGain = 0.003f + (1f - cleanup) * 0.18f;
         float speechBandAlpha = clamp(0.68f - cleanup * 0.15f, 0.50f, 0.68f);
 
         for (int i = 0; i < length; i++) {
@@ -268,9 +337,12 @@ final class AudioEngine {
             float dynamicClose = Math.max(baseCloseThreshold, noiseFloor * (1.35f + cleanup * 0.75f));
             boolean currentlyOpen = gateGain > 0.45f;
             boolean envelopeOpen = currentlyOpen ? inputEnvelope > dynamicClose : inputEnvelope > dynamicOpen;
-            boolean shouldOpen = vadEnabled ? (vad.speech || envelopeOpen && vad.confidence >= 18) : envelopeOpen;
+
+            // This is intentionally strict. With VAD enabled, energy alone cannot
+            // open the gate anymore; the frame must look like near-field speech.
+            boolean shouldOpen = vadEnabled ? vad.speech : envelopeOpen;
             float gateTarget = shouldOpen ? 1f : floorGain;
-            float gateRate = gateTarget > gateGain ? 0.16f : 0.0010f;
+            float gateRate = gateTarget > gateGain ? 0.18f : 0.00125f;
             gateGain += (gateTarget - gateGain) * gateRate;
 
             float cleaned = filtered * gateGain;
@@ -294,7 +366,7 @@ final class AudioEngine {
 
             if (reverb > 0.001f) {
                 float delayed = reverbBuffer[reverbIndex];
-                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.18f, -1f, 1f);
+                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.16f, -1f, 1f);
                 reverbIndex++;
                 if (reverbIndex >= reverbBuffer.length) reverbIndex = 0;
                 x = x * (1f - reverb) + delayed * reverb;
@@ -313,7 +385,7 @@ final class AudioEngine {
         }
     }
 
-    private void releaseAudio() {
+    private synchronized void releaseAudio() {
         voiceDetected = false;
         voiceConfidence = 0;
 
@@ -354,6 +426,17 @@ final class AudioEngine {
         } catch (Exception ignored) {}
     }
 
+    private synchronized void disposeProcessors() {
+        if (disposed) return;
+        disposed = true;
+        try {
+            neuralProcessor.close();
+        } catch (Exception ignored) {}
+        try {
+            strictVad.close();
+        } catch (Exception ignored) {}
+    }
+
     private static float dbToGain(float db) {
         float safe = clamp(db, -12f, 12f);
         return (float) Math.pow(10.0, safe / 20.0);
@@ -365,66 +448,6 @@ final class AudioEngine {
 
     private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
-    }
-
-    private static final class VadResult {
-        final boolean speech;
-        final int confidence;
-
-        VadResult(boolean speech, int confidence) {
-            this.speech = speech;
-            this.confidence = confidence;
-        }
-    }
-
-    private static final class VoiceActivityDetector {
-        private float noiseRms = 0.004f;
-        private int hangoverBlocks = 0;
-        private int lastConfidence = 0;
-
-        VadResult analyze(short[] input, int length, float cleanup, boolean enabled) {
-            if (!enabled || length <= 0) return new VadResult(false, 0);
-
-            double energy = 0.0;
-            float peak = 0f;
-            for (int i = 0; i < length; i++) {
-                float sample = input[i] / 32768f;
-                energy += sample * sample;
-                peak = Math.max(peak, Math.abs(sample));
-            }
-
-            float rms = (float) Math.sqrt(energy / length);
-            float currentNoise = Math.max(0.0008f, noiseRms);
-            float snrDb = (float) (20.0 * Math.log10((rms + 0.00001f) / (currentNoise + 0.00001f)));
-            float thresholdDb = 4.0f + cleanup * 4.0f;
-            float minEnergy = 0.0030f + cleanup * 0.0025f;
-            boolean candidate = rms > minEnergy
-                && snrDb > thresholdDb
-                && peak > currentNoise * (2.0f + cleanup * 0.8f);
-
-            if (!candidate && hangoverBlocks == 0) {
-                float learnRate = rms < noiseRms ? 0.025f : 0.0020f;
-                noiseRms += (rms - noiseRms) * learnRate;
-                noiseRms = clamp(noiseRms, 0.0010f, 0.040f);
-            }
-
-            int confidence = Math.round(clamp((snrDb - thresholdDb + 5f) / 16f, 0f, 1f) * 100f);
-            if (candidate) {
-                int blocksFor180Ms = Math.max(2, Math.round(0.18f * SAMPLE_RATE / length));
-                hangoverBlocks = blocksFor180Ms;
-                lastConfidence = Math.max(35, confidence);
-                return new VadResult(true, lastConfidence);
-            }
-
-            if (hangoverBlocks > 0) {
-                hangoverBlocks--;
-                lastConfidence = Math.max(18, Math.round(lastConfidence * 0.92f));
-                return new VadResult(true, lastConfidence);
-            }
-
-            lastConfidence = Math.max(0, Math.round(lastConfidence * 0.70f));
-            return new VadResult(false, Math.min(confidence, lastConfidence));
-        }
     }
 
     private static final class PitchShifter {
