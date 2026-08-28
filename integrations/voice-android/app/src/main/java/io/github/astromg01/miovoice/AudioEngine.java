@@ -9,6 +9,7 @@ import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,9 +30,11 @@ final class AudioEngine {
     private AudioRecord recorder;
     private AudioTrack player;
     private NoiseSuppressor noiseSuppressor;
+    private AcousticEchoCanceler acousticEchoCanceler;
     private Thread thread;
     private volatile int estimatedLatencyMs = -1;
     private float lowState = 0f;
+    private float outputLowpassState = 0f;
     private float robotPhase = 0f;
     private int reverbIndex = 0;
 
@@ -105,6 +108,11 @@ final class AudioEngine {
                 if (noiseSuppressor != null) noiseSuppressor.setEnabled(true);
             }
 
+            if (AcousticEchoCanceler.isAvailable()) {
+                acousticEchoCanceler = AcousticEchoCanceler.create(recorder.getAudioSessionId());
+                if (acousticEchoCanceler != null) acousticEchoCanceler.setEnabled(true);
+            }
+
             AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 
@@ -130,13 +138,18 @@ final class AudioEngine {
     }
 
     private void process(short[] input, short[] output, int length, VoiceApi.Config cfg) {
-        float mix = clamp((float) cfg.mix, 0f, 1f);
-        float bassGain = dbToGain((float) (cfg.bass - cfg.formant * 0.7));
-        float presenceGain = dbToGain((float) (cfg.presence + cfg.formant * 0.9));
-        float drive = clamp((float) cfg.drive, 0f, 1f);
-        float robot = clamp((float) cfg.robot, 0f, 1f);
-        float reverb = clamp((float) cfg.reverb, 0f, 0.65f);
-        float pitch = (float) cfg.pitch;
+        // Intensity now scales the transformation itself instead of blending an
+        // immediate dry signal with a delayed wet signal. The old parallel mix
+        // produced two audible voices and comb-filter/whistling artifacts.
+        float strength = clamp((float) cfg.mix, 0f, 1f);
+        float formant = (float) cfg.formant * strength;
+        float bassGain = dbToGain((float) cfg.bass * strength - formant * 0.7f);
+        float presenceGain = dbToGain((float) cfg.presence * strength + formant * 0.9f);
+        float drive = clamp((float) cfg.drive * strength, 0f, 1f);
+        float robot = clamp((float) cfg.robot * strength, 0f, 1f);
+        float reverb = clamp((float) cfg.reverb * strength, 0f, 0.65f);
+        float pitch = (float) cfg.pitch * strength;
+        boolean pitchActive = Math.abs(pitch) >= 0.03f;
 
         for (int i = 0; i < length; i++) {
             float dry = input[i] / 32768f;
@@ -160,19 +173,32 @@ final class AudioEngine {
 
             if (reverb > 0.001f) {
                 float delayed = reverbBuffer[reverbIndex];
-                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.35f, -1f, 1f);
+                reverbBuffer[reverbIndex] = clamp(x + delayed * 0.30f, -1f, 1f);
                 reverbIndex++;
                 if (reverbIndex >= reverbBuffer.length) reverbIndex = 0;
                 x = x * (1f - reverb) + delayed * reverb;
             }
 
-            float mixed = dry * (1f - mix) + x * mix;
-            mixed = softLimit(mixed);
-            output[i] = (short) Math.round(mixed * 32767f);
+            // Gentle post-pitch high-frequency damping helps suppress the thin
+            // periodic whistle that simple time-domain pitch shifting can add.
+            if (pitchActive) {
+                outputLowpassState += 0.78f * (x - outputLowpassState);
+                x = outputLowpassState;
+            } else {
+                outputLowpassState = x;
+            }
+
+            x = softLimit(x);
+            output[i] = (short) Math.round(x * 32767f);
         }
     }
 
     private void releaseAudio() {
+        try {
+            if (acousticEchoCanceler != null) acousticEchoCanceler.release();
+        } catch (Exception ignored) {}
+        acousticEchoCanceler = null;
+
         try {
             if (noiseSuppressor != null) noiseSuppressor.release();
         } catch (Exception ignored) {}
