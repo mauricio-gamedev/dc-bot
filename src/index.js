@@ -49,6 +49,12 @@ import {
   kickInteractiveCommandData,
   kickInteractiveStatus,
 } from './core/kickInteractive.js';
+import {
+  handleVoiceCommand,
+  handleVoiceHttp,
+  voiceCommandData,
+  voiceStatus,
+} from './core/voiceInteractive.js';
 
 const packageMetadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const appVersion = String(packageMetadata.version || '0.0.0');
@@ -67,6 +73,7 @@ const registeredCommandData = [
   minecraftCommandData,
   mindustryCommandData,
   kickInteractiveCommandData,
+  voiceCommandData,
 ];
 
 const officialAssets = new Map([
@@ -125,6 +132,7 @@ const healthServer = http.createServer(async (req, res) => {
   try {
     if (await handleKickInteractiveHttp(req, res, client)) return;
     if (await handleMindustryHttp(req, res, client)) return;
+    if (await handleVoiceHttp(req, res, client)) return;
 
     const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
 
@@ -141,6 +149,7 @@ const healthServer = http.createServer(async (req, res) => {
     const kickChat = kickInteractiveStatus(guildId);
     const minecraft = minecraftBridgeStatus();
     const mindustry = mindustryStatus(guildId);
+    const voice = voiceStatus(guildId);
     const automation = communityAutomationStatus();
     const body = {
       ok: ready,
@@ -175,6 +184,14 @@ const healthServer = http.createServer(async (req, res) => {
         interactionsOpen: mindustry.interactionsOpen,
         linkedAt: mindustry.linkedAt,
         lastSeenAt: mindustry.lastSeenAt,
+      },
+      voiceInteractive: {
+        connected: voice.connected,
+        linkedAt: voice.linkedAt,
+        lastSeenAt: voice.lastSeenAt,
+        preset: voice.preset,
+        intensity: voice.intensity,
+        route: voice.device?.route || null,
       },
       communityAutomation: automation,
       uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
@@ -251,6 +268,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleEventCommand(interaction)) return;
     if (await handleIdentityCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
+    if (await handleVoiceCommand(interaction)) return;
     if (await handleMindustryCommand(interaction)) return;
     if (await handleMinecraftCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
