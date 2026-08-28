@@ -1,7 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
-const OFFICIAL_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/mauricio-gamedev/dc-bot@a0836d6ef188f7ba15896e31293d2a51123981b3/assets';
+const OFFICIAL_ASSET_BASE = 'https://dc-bot-us5v.onrender.com/assets';
 const ASSET_VERSIONS = Object.freeze({
   character: 'a11b18ed09704b11de301704edb572c778b58df9',
   badgeStatic: '6c10d3f430be1fb31b1862521b56b9b69d80a81d',
@@ -75,7 +75,6 @@ export function characterEmbed({
   const selectedSeal = sealAsset(assets, seal);
   const footerData = { text: footer };
 
-  // Footer usa sempre o fallback estático: funciona mesmo em superfícies/clientes sem animação.
   if (assets.badge) footerData.iconURL = assets.badge;
 
   const embed = new EmbedBuilder()
@@ -86,7 +85,6 @@ export function characterEmbed({
     .setTimestamp();
 
   if (presentation === 'hero') {
-    // Hero é reservado para momentos em que a presença visual do Mio merece ocupar mais espaço.
     if (thumbnail && selectedSeal) embed.setThumbnail(selectedSeal);
     const visual = explicitImage ?? assets.profile ?? assets.avatar;
     if (visual) embed.setImage(visual);
@@ -94,14 +92,11 @@ export function characterEmbed({
   }
 
   if (presentation === 'badge') {
-    // Badge prioriza o selo e aceita uma imagem explícita (ex.: thumbnail real de live/evento).
     if (thumbnail && selectedSeal) embed.setThumbnail(selectedSeal);
     if (explicitImage) embed.setImage(explicitImage);
     return embed;
   }
 
-  // Compact é o padrão para perfil, daily, ranking, loja, missões e conquistas.
-  // Mantém o Mio visível sem repetir uma imagem hero gigante em todo comando.
   if (thumbnail && assets.avatar) embed.setThumbnail(assets.avatar);
   if (explicitImage) embed.setImage(explicitImage);
   return embed;
