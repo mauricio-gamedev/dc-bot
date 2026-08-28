@@ -49,14 +49,14 @@ def patch_imgui_font_fallback() -> None:
     IMGUI_WRAPPER.write_text(text, encoding="utf-8")
 
 
-def patch_texture_database_runtime_hook() -> None:
-    """Force GTA's player/menu texture DB requests to use Android PVR.
+def patch_texture_database_compat() -> None:
+    """Install deterministic libGame PLT hooks for texture database format selection.
 
-    libGame's TextureDatabaseFormat mapping is 1=DXT, 4=PVR, 6=automatic.
-    The previous source-level rewrite did not affect the real player/menu loads:
-    those calls happen inside the prebuilt libGame.so. ShadowHook already hooks
-    libGame symbols in this client, so intercept TextureDatabaseRuntime::Load
-    itself and rewrite only player/menu format arguments at runtime.
+    The previous ShadowHook symbol hook compiled but did not run on the device. The
+    pinned ARM64 libGame calls TextureDatabaseRuntime::Load through GOT slot 0x849430
+    and TextureDatabase::LoadThumbs through GOT slot 0x84EB88. Hook those exact PLT/GOT
+    entries, auto-detect the texture format that actually exists in /GTA/texdb, and
+    keep TextureDatabase::loadedFormat synchronized with the selected variant.
     """
 
     extensions = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp"}
@@ -65,52 +65,143 @@ def patch_texture_database_runtime_hook() -> None:
     )
 
     helper = r'''
-using TextureDatabaseLoadFn = void* (*)(const char*, bool, int);
-static TextureDatabaseLoadFn g_textureDatabaseLoadOriginal = nullptr;
+// GTA TextureCompat v2: deterministic PLT hooks for the pinned ARM64 libGame.
+static constexpr uintptr_t kTextureDatabaseRuntimeLoadGot = 0x849430;
+static constexpr uintptr_t kTextureDatabaseLoadThumbsGot = 0x84EB88;
 
-static bool TextureDatabaseNameEquals(const char* value, const char* expected)
+using TextureDatabaseRuntimeLoadFn = TextureDatabaseRuntime* (*)(const char*, bool, TextureDatabaseFormat);
+using TextureDatabaseLoadThumbsFn = bool (*)(TextureDatabase*, TextureDatabaseFormat, bool);
+
+static TextureDatabaseRuntimeLoadFn g_textureDatabaseRuntimeLoadOriginal = nullptr;
+static TextureDatabaseLoadThumbsFn g_textureDatabaseLoadThumbsOriginal = nullptr;
+
+static const char* TextureDatabaseFormatSuffix(TextureDatabaseFormat format)
 {
-    if (value == nullptr || expected == nullptr)
-        return false;
-
-    while (*value != '\0' && *expected != '\0')
+    switch (format)
     {
-        if (*value != *expected)
-            return false;
-        ++value;
-        ++expected;
+        case DF_UNC: return "unc";
+        case DF_DXT: return "dxt";
+        case DF_360: return "360";
+        case DF_PS3: return "ps3";
+        case DF_PVR: return "pvr";
+        case DF_ETC: return "etc";
+        default: return nullptr;
     }
-    return *value == *expected;
 }
 
-static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int format)
+static bool TextureDatabaseVariantExists(const char* name, TextureDatabaseFormat format)
 {
-    int forcedFormat = format;
-    if (TextureDatabaseNameEquals(name, "player") ||
-        TextureDatabaseNameEquals(name, "menu"))
+    if (name == nullptr || *name == '\0' || g_pszStorage == nullptr)
+        return false;
+
+    const char* suffix = TextureDatabaseFormatSuffix(format);
+    if (suffix == nullptr)
+        return false;
+
+    char path[512]{};
+    const int written = snprintf(
+            path,
+            sizeof(path),
+            "%stexdb/%s/%s.%s.tmb",
+            g_pszStorage,
+            name,
+            name,
+            suffix);
+
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(path))
+        return false;
+
+    return access(path, R_OK) == 0;
+}
+
+static TextureDatabaseFormat DetectTextureDatabaseFormat(
+        const char* name,
+        TextureDatabaseFormat requested)
+{
+    // Preserve the requested format when its files really exist.
+    if (requested >= DF_UNC && requested <= DF_ETC &&
+        TextureDatabaseVariantExists(name, requested))
     {
-        forcedFormat = 4;
-        Log("Texture DB format override | %s: %d -> %d", name, format, forcedFormat);
+        return requested;
     }
 
-    if (g_textureDatabaseLoadOriginal == nullptr)
+    // Android packages in the wild may contain one of these variants regardless
+    // of the GPU. Prefer actual on-disk data over libGame's automatic GPU choice.
+    static constexpr TextureDatabaseFormat kCandidates[] = {
+            DF_PVR,
+            DF_ETC,
+            DF_DXT,
+            DF_UNC,
+            DF_360,
+            DF_PS3,
+    };
+
+    for (TextureDatabaseFormat candidate : kCandidates)
     {
-        Log("Texture DB format override | original loader unavailable");
+        if (TextureDatabaseVariantExists(name, candidate))
+            return candidate;
+    }
+
+    return requested;
+}
+
+static TextureDatabaseRuntime* TextureDatabaseRuntimeLoadCompat(
+        const char* name,
+        bool fullyLoad,
+        TextureDatabaseFormat requested)
+{
+    if (g_textureDatabaseRuntimeLoadOriginal == nullptr)
+    {
+        Log("[TextureCompat] runtime loader unavailable");
         return nullptr;
     }
 
-    return g_textureDatabaseLoadOriginal(name, fullyLoad, forcedFormat);
+    const TextureDatabaseFormat selected = DetectTextureDatabaseFormat(name, requested);
+    Log("[TextureCompat] Load %s | requested=%d selected=%d",
+        name != nullptr ? name : "<null>",
+        static_cast<int>(requested),
+        static_cast<int>(selected));
+
+    return g_textureDatabaseRuntimeLoadOriginal(name, fullyLoad, selected);
+}
+
+static bool TextureDatabaseLoadThumbsCompat(
+        TextureDatabase* database,
+        TextureDatabaseFormat requested,
+        bool setEntries)
+{
+    if (g_textureDatabaseLoadThumbsOriginal == nullptr)
+    {
+        Log("[TextureCompat] thumb loader unavailable");
+        return false;
+    }
+
+    const char* name = database != nullptr ? database->name : nullptr;
+    const TextureDatabaseFormat selected = DetectTextureDatabaseFormat(name, requested);
+
+    if (database != nullptr)
+        database->loadedFormat = selected;
+
+    Log("[TextureCompat] Thumbs %s | requested=%d selected=%d",
+        name != nullptr ? name : "<null>",
+        static_cast<int>(requested),
+        static_cast<int>(selected));
+
+    return g_textureDatabaseLoadThumbsOriginal(database, selected, setEntries);
 }
 
 '''
 
     hook_install = r'''
-    shadowhook_hook_sym_name(
-            "libGame.so",
-            "_ZN22TextureDatabaseRuntime4LoadEPKcb21TextureDatabaseFormat",
-            (void*)TextureDatabaseLoadPvrHook,
-            (void**)&g_textureDatabaseLoadOriginal);
-    Log("Installed GTA texture database PVR format hook");
+    CHook::InstallPLT(
+            g_libGTASA + kTextureDatabaseRuntimeLoadGot,
+            &TextureDatabaseRuntimeLoadCompat,
+            &g_textureDatabaseRuntimeLoadOriginal);
+    CHook::InstallPLT(
+            g_libGTASA + kTextureDatabaseLoadThumbsGot,
+            &TextureDatabaseLoadThumbsCompat,
+            &g_textureDatabaseLoadThumbsOriginal);
+    Log("[TextureCompat] v2 PLT hooks installed | Load=0x849430 Thumbs=0x84EB88");
 '''
 
     candidates: list[Path] = []
@@ -137,32 +228,30 @@ static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int fo
         if not match:
             continue
 
-        if "TextureDatabaseLoadPvrHook" not in text:
+        if "GTA TextureCompat v2" not in text:
             text = text[:match.start()] + helper + text[match.start():]
             match = install_pattern.search(text)
             if not match:
-                raise SystemExit("InstallCrashFixHooks disappeared after helper insertion")
+                raise SystemExit("InstallCrashFixHooks disappeared after TextureCompat insertion")
 
-        if "Installed GTA texture database PVR format hook" not in text:
+        if "[TextureCompat] v2 PLT hooks installed" not in text:
             brace_end = match.end()
             text = text[:brace_end] + hook_install + text[brace_end:]
 
         path.write_text(text, encoding="utf-8")
-        print(f"Patched runtime TextureDatabaseRuntime::Load hook in {path}")
+        print(f"Patched deterministic TextureCompat PLT hooks in {path}")
         return
 
     print("InstallCrashFixHooks source candidates:")
     for snippet in occurrence_context:
         print("\n---\n" + snippet)
-    raise SystemExit(
-        "Unable to match InstallCrashFixHooks definition for texture DB override"
-    )
+    raise SystemExit("Unable to match InstallCrashFixHooks definition for TextureCompat")
 
 
 if __name__ == "__main__":
     patch_settings_defaults()
     patch_imgui_font_fallback()
-    patch_texture_database_runtime_hook()
+    patch_texture_database_compat()
 
     settings_text = SETTINGS.read_text(encoding="utf-8")
     imgui_text = IMGUI_WRAPPER.read_text(encoding="utf-8")
@@ -178,9 +267,14 @@ if __name__ == "__main__":
             text = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             continue
-        if "TextureDatabaseLoadPvrHook" in text and "Installed GTA texture database PVR format hook" in text:
+        if (
+            "GTA TextureCompat v2" in text
+            and "kTextureDatabaseRuntimeLoadGot = 0x849430" in text
+            and "kTextureDatabaseLoadThumbsGot = 0x84EB88" in text
+            and "[TextureCompat] v2 PLT hooks installed" in text
+        ):
             patched_hook = True
             break
     assert patched_hook
 
-    print("Patched native settings, font fallback, and runtime PVR texture override successfully.")
+    print("Patched native defaults and deterministic TextureCompat v2 successfully.")
