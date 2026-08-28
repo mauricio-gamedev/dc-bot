@@ -15,10 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * blocking the lightweight DSP monitor or freezing a low-end phone.
  */
 final class NeuralStreamProcessor implements AutoCloseable {
-    private static final int SAMPLE_RATE = 48_000;
-    private static final int CHUNK_SAMPLES = 23_040; // 480 ms
+    private static final int CHUNK_SAMPLES = 23_040; // 480 ms @ 48 kHz
 
-    private final Context context;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final ArrayBlockingQueue<float[]> inputQueue = new ArrayBlockingQueue<>(1);
     private final ArrayBlockingQueue<short[]> outputQueue = new ArrayBlockingQueue<>(2);
@@ -42,9 +40,9 @@ final class NeuralStreamProcessor implements AutoCloseable {
     private String hubertPath = "";
     private String rmvpePath = "";
     private String synthPath = "";
+    private long modelSignature = Long.MIN_VALUE;
 
     NeuralStreamProcessor(Context context) {
-        this.context = context.getApplicationContext();
         worker = new Thread(this::workerLoop, "mio-neural-rvc");
         worker.setPriority(Thread.NORM_PRIORITY);
         worker.start();
@@ -60,29 +58,38 @@ final class NeuralStreamProcessor implements AutoCloseable {
     ) {
         transpose = Math.max(-12, Math.min(12, nextTranspose));
         voiceLabel = nextVoiceLabel == null || nextVoiceLabel.isBlank() ? "Voz RVC" : nextVoiceLabel;
-        boolean pathsChanged = !safe(nextHubert).equals(hubertPath)
-            || !safe(nextRmvpe).equals(rmvpePath)
-            || !safe(nextSynth).equals(synthPath);
-        hubertPath = safe(nextHubert);
-        rmvpePath = safe(nextRmvpe);
-        synthPath = safe(nextSynth);
+        String newHubert = safe(nextHubert);
+        String newRmvpe = safe(nextRmvpe);
+        String newSynth = safe(nextSynth);
+        long nextSignature = signature(newHubert, newRmvpe, newSynth);
+        boolean modelsChanged = !newHubert.equals(hubertPath)
+            || !newRmvpe.equals(rmvpePath)
+            || !newSynth.equals(synthPath)
+            || nextSignature != modelSignature;
+        hubertPath = newHubert;
+        rmvpePath = newRmvpe;
+        synthPath = newSynth;
+        modelSignature = nextSignature;
         enabled = nextEnabled;
 
         if (!enabled) {
             ready = false;
             status = "desligado";
             clearAudioQueues();
+            closeEngine();
             return;
         }
 
-        if (hubertPath.isEmpty() || rmvpePath.isEmpty() || synthPath.isEmpty()) {
+        if (hubertPath.isEmpty() || rmvpePath.isEmpty() || synthPath.isEmpty()
+            || !new File(hubertPath).isFile() || !new File(rmvpePath).isFile() || !new File(synthPath).isFile()) {
             ready = false;
             status = "modelos incompletos";
             clearAudioQueues();
+            closeEngine();
             return;
         }
 
-        if (pathsChanged || engine == null) {
+        if (modelsChanged || engine == null) {
             ready = false;
             status = "carregando modelos…";
             reloadRequested = true;
@@ -95,8 +102,6 @@ final class NeuralStreamProcessor implements AutoCloseable {
         if (!enabled || !ready || input == null || output == null || length <= 0) return false;
 
         for (int i = 0; i < length; i++) {
-            // When VAD is closed we still advance the neural clock with silence,
-            // avoiding a timeline jump when speech returns.
             captureChunk[capturePosition++] = speech ? input[i] / 32768f : 0f;
             if (capturePosition >= captureChunk.length) {
                 float[] chunk = captureChunk.clone();
@@ -119,8 +124,6 @@ final class NeuralStreamProcessor implements AutoCloseable {
         int written = 0;
         while (written < length) {
             if (currentOutput == null) {
-                // Once neural playback starts, silence is safer than suddenly
-                // leaking the original voice through a stalled model.
                 while (written < length) output[written++] = 0;
                 break;
             }
@@ -147,10 +150,6 @@ final class NeuralStreamProcessor implements AutoCloseable {
 
     String getStatus() {
         return status;
-    }
-
-    String getVoiceLabel() {
-        return voiceLabel;
     }
 
     int getLastInferenceMs() {
@@ -192,7 +191,7 @@ final class NeuralStreamProcessor implements AutoCloseable {
                     ? "neural pronto • " + voiceLabel
                     : "neural lento x" + String.format(java.util.Locale.US, "%.1f", realtime) + " • " + voiceLabel;
             } catch (InterruptedException ignored) {
-                // configuration wake-up
+                // Configuration wake-up.
             } catch (Exception error) {
                 ready = false;
                 status = "erro neural: " + safeMessage(error);
@@ -243,6 +242,16 @@ final class NeuralStreamProcessor implements AutoCloseable {
         if (worker != null) worker.interrupt();
         clearAudioQueues();
         closeEngine();
+    }
+
+    private static long signature(String... paths) {
+        long value = 1125899906842597L;
+        for (String path : paths) {
+            File file = new File(path == null ? "" : path);
+            value = value * 31L + file.length();
+            value = value * 31L + file.lastModified();
+        }
+        return value;
     }
 
     private static short[] toPcm16(float[] input) {
