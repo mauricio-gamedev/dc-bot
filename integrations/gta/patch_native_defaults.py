@@ -18,7 +18,10 @@ def patch_settings_defaults() -> None:
     text = replace_once(
         text,
         r'''if\s*\(\s*reader\.ParseError\(\)\s*<\s*0\s*\)\s*\{\s*Log\("Error: can't load %s", buff\);\s*std::terminate\(\);\s*return;\s*\}''',
-        '''if(reader.ParseError() < 0)\n\t{\n\t\tLog("Settings file unavailable at %s; continuing with built-in defaults.", buff);\n\t}''',
+        '''if(reader.ParseError() < 0)
+\t{
+\t\tLog("Settings file unavailable at %s; continuing with built-in defaults.", buff);
+\t}''',
         "settings.ini fallback",
         flags=re.DOTALL,
     )
@@ -30,104 +33,144 @@ def patch_imgui_font_fallback() -> None:
     text = replace_once(
         text,
         r'''if\s*\(font\s*==\s*nullptr\)\s*\{\s*Log::addParameter\("font",\s*font\);\s*return\s+false;\s*\}''',
-        '''if (font == nullptr)\n    {\n        font = io.Fonts->AddFontDefault();\n    }\n\n    if (font == nullptr)\n    {\n        Log::addParameter("font", font);\n        return false;\n    }''',
+        '''if (font == nullptr)
+    {
+        font = io.Fonts->AddFontDefault();
+    }
+
+    if (font == nullptr)
+    {
+        Log::addParameter("font", font);
+        return false;
+    }''',
         "ImGui font fallback",
         flags=re.DOTALL,
     )
     IMGUI_WRAPPER.write_text(text, encoding="utf-8")
 
 
-def _pvr_format_expression(original: str) -> str | None:
-    value = original.strip()
-    if re.fullmatch(r"[0-9]+", value):
-        return "4"
-    if "TextureDatabaseFormat" in value:
-        return "(TextureDatabaseFormat)4"
-    return None
+def patch_texture_database_runtime_hook() -> None:
+    """Force GTA's player/menu texture DB requests to use Android PVR.
 
-
-def patch_android_texture_database_formats() -> None:
-    """Use the cache's native Android PVR format for player/menu databases.
-
-    GTA SA Android texture DB format ids are: 1=DXT, 4=PVR, 6=automatic.
-    This client currently reaches player.dxt.tmb on the test cache, while the
-    cache contains player.pvr.{dat,tmb,toc}. We only rewrite explicit
-    TextureDatabaseRuntime::Load-style calls for player/playerhi/menu and keep
-    the SAMP texture database untouched.
+    libGame's TextureDatabaseFormat mapping is 1=DXT, 4=PVR, 6=automatic.
+    The previous source-level rewrite did not affect the real player/menu loads:
+    those calls happen inside the prebuilt libGame.so. ShadowHook already hooks
+    libGame symbols in this client, so intercept TextureDatabaseRuntime::Load
+    itself and rewrite only player/menu format arguments at runtime.
     """
 
     extensions = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp"}
-    target_names = ("playerhi", "player", "menu")
-    patched_calls: list[str] = []
-    candidate_context: list[str] = []
-
-    direct_call = re.compile(
-        r'''(?P<prefix>(?:TextureDatabaseRuntime\s*::\s*Load|LoadTextureDatabase|TextureDatabaseRuntime_Load)\s*\(\s*"(?P<name>playerhi|player|menu)"\s*,\s*[^,()\n]+\s*,\s*)(?P<format>[^)\n]+)(?P<suffix>\))'''
+    install_pattern = re.compile(
+        r'(?m)^(?P<indent>[ \t]*)void\s+InstallCrashFixHooks\s*\(\s*\)\s*\{'
     )
 
-    generic_three_arg = re.compile(
-        r'''(?P<prefix>\(\s*"(?P<name>playerhi|player|menu)"\s*,\s*(?:false|true|0|1)\s*,\s*)(?P<format>(?:\(\s*TextureDatabaseFormat\s*\)\s*)?[0-9]+|TextureDatabaseFormat[^,;\n)]*)(?P<suffix>\))'''
-    )
+    helper = r'''
+using TextureDatabaseLoadFn = void* (*)(const char*, bool, int);
+static TextureDatabaseLoadFn g_textureDatabaseLoadOriginal = nullptr;
 
+static bool TextureDatabaseNameEquals(const char* value, const char* expected)
+{
+    if (value == nullptr || expected == nullptr)
+        return false;
+
+    while (*value != '\0' && *expected != '\0')
+    {
+        if (*value != *expected)
+            return false;
+        ++value;
+        ++expected;
+    }
+    return *value == *expected;
+}
+
+static void* TextureDatabaseLoadPvrHook(const char* name, bool fullyLoad, int format)
+{
+    int forcedFormat = format;
+    if (TextureDatabaseNameEquals(name, "player") ||
+        TextureDatabaseNameEquals(name, "menu"))
+    {
+        forcedFormat = 4;
+        Log("Texture DB format override | %s: %d -> %d", name, format, forcedFormat);
+    }
+
+    if (g_textureDatabaseLoadOriginal == nullptr)
+    {
+        Log("Texture DB format override | original loader unavailable");
+        return nullptr;
+    }
+
+    return g_textureDatabaseLoadOriginal(name, fullyLoad, forcedFormat);
+}
+
+'''
+
+    hook_install = r'''
+    shadowhook_hook_sym_name(
+            "libGame.so",
+            "_ZN22TextureDatabaseRuntime4LoadEPKcb21TextureDatabaseFormat",
+            (void*)TextureDatabaseLoadPvrHook,
+            (void**)&g_textureDatabaseLoadOriginal);
+    Log("Installed GTA texture database PVR format hook");
+'''
+
+    candidates: list[Path] = []
     for path in sorted(CPP_ROOT.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue
-
         try:
             text = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             continue
+        if "InstallCrashFixHooks" in text and "shadowhook_hook_sym_name" in text:
+            candidates.append(path)
 
-        if not any(f'"{name}"' in text for name in target_names):
+    for path in candidates:
+        text = path.read_text(encoding="utf-8-sig")
+        match = install_pattern.search(text)
+        if not match:
             continue
 
-        for match in re.finditer(r"TextureDatabaseRuntime|playerhi|\"player\"|\"menu\"", text):
-            start = max(0, text.rfind("\n", 0, match.start() - 220))
-            end = text.find("\n", match.end() + 260)
-            if end == -1:
-                end = min(len(text), match.end() + 260)
-            snippet = text[start:end].strip()
-            if snippet and snippet not in candidate_context:
-                candidate_context.append(f"{path}:\n{snippet}")
-            if len(candidate_context) >= 24:
-                break
+        if "TextureDatabaseLoadPvrHook" not in text:
+            text = text[:match.start()] + helper + text[match.start():]
+            match = install_pattern.search(text)
+            if not match:
+                raise SystemExit("InstallCrashFixHooks disappeared after helper insertion")
 
-        def rewrite(match: re.Match[str]) -> str:
-            replacement = _pvr_format_expression(match.group("format"))
-            if replacement is None:
-                return match.group(0)
-            name = match.group("name")
-            patched_calls.append(
-                f"{path}: {name}: {match.group('format').strip()} -> {replacement}"
-            )
-            return match.group("prefix") + replacement + match.group("suffix")
+        if "Installed GTA texture database PVR format hook" not in text:
+            brace_end = match.end()
+            text = text[:brace_end] + hook_install + text[brace_end:]
 
-        updated = direct_call.sub(rewrite, text)
-        updated = generic_three_arg.sub(rewrite, updated)
+        path.write_text(text, encoding="utf-8")
+        print(f"Patched runtime TextureDatabaseRuntime::Load hook in {path}")
+        return
 
-        if updated != text:
-            path.write_text(updated, encoding="utf-8")
-
-    if not patched_calls:
-        print("No explicit player/menu texture format call was patched.")
-        print("Candidate native source context follows:")
-        for snippet in candidate_context:
-            print("\n---\n" + snippet)
-        raise SystemExit("Unable to locate the GTA texture database format selection call")
-
-    print("Patched Android GTA texture database formats:")
-    for item in patched_calls:
-        print(" - " + item)
+    raise SystemExit(
+        "Unable to locate InstallCrashFixHooks with ShadowHook support for texture DB override"
+    )
 
 
 if __name__ == "__main__":
     patch_settings_defaults()
     patch_imgui_font_fallback()
-    patch_android_texture_database_formats()
+    patch_texture_database_runtime_hook()
 
     settings_text = SETTINGS.read_text(encoding="utf-8")
     imgui_text = IMGUI_WRAPPER.read_text(encoding="utf-8")
     assert "std::terminate();" not in settings_text
     assert "continuing with built-in defaults" in settings_text
     assert "AddFontDefault()" in imgui_text
-    print("Patched native settings, font fallback, and Android texture formats successfully.")
+
+    patched_hook = False
+    for path in CPP_ROOT.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            continue
+        if "TextureDatabaseLoadPvrHook" in text and "Installed GTA texture database PVR format hook" in text:
+            patched_hook = True
+            break
+    assert patched_hook
+
+    print("Patched native settings, font fallback, and runtime PVR texture override successfully.")
