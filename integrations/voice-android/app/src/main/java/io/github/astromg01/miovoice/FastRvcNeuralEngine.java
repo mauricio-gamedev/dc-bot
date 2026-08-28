@@ -8,6 +8,7 @@ import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
 import ai.onnxruntime.TensorInfo;
+import ai.onnxruntime.providers.NNAPIFlags;
 
 import org.json.JSONObject;
 
@@ -15,6 +16,7 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -23,8 +25,13 @@ import java.util.Set;
  * Performance-oriented local RVC path for Android.
  *
  * Supports the large voice-changer base models already used by Mio Voice and
- * the much smaller voiceclonnx INT8/Q8 ContentVec + RMVPE base pair.  The
- * character synthesizer remains user supplied.  Audio never leaves the phone.
+ * the much smaller voiceclonnx INT8/Q8 ContentVec + RMVPE base pair. The
+ * character synthesizer remains user supplied. Audio never leaves the phone.
+ *
+ * v0.1.7 keeps ContentVec/RMVPE on XNNPACK but gives the character synth a
+ * dedicated accelerator path: hardware-only NNAPI FP16 first, partial NNAPI
+ * FP16 second, then XNNPACK/CPU fallback. The active backend is exposed in the
+ * live timing card so device testing stays honest.
  */
 final class FastRvcNeuralEngine implements AutoCloseable {
     private static final int INPUT_SR = 16_000;
@@ -58,24 +65,24 @@ final class FastRvcNeuralEngine implements AutoCloseable {
         }
 
         this.label = voiceLabel == null || voiceLabel.isBlank() ? "Voz RVC" : voiceLabel;
-        String selectedBackend = "CPU";
         try {
-            SessionOpen h = openOptimized(hubertFile);
+            SessionOpen h = openBaseOptimized(hubertFile);
             hubert = h.session;
-            selectedBackend = h.backend;
-            SessionOpen r = openOptimized(rmvpeFile);
+            SessionOpen r = openBaseOptimized(rmvpeFile);
             rmvpe = r.session;
-            if (!r.backend.equals(selectedBackend)) selectedBackend += "+" + r.backend;
-            SessionOpen s = openOptimized(synthFile);
+            SessionOpen s = openSynthOptimized(synthFile);
             synth = s.session;
-            if (!s.backend.equals(selectedBackend) && !selectedBackend.contains(s.backend)) selectedBackend += "+" + s.backend;
+
+            String baseBackend = h.backend.equals(r.backend)
+                ? h.backend
+                : h.backend + "+" + r.backend;
+            backend = "base " + baseBackend + " • synth " + s.backend;
 
             hubertOutput = chooseHubertOutput(hubert);
             validateSchemas();
             ModelMeta meta = readModelMeta(synth);
             sampleRate = meta.sampleRate;
             f0 = meta.f0;
-            backend = selectedBackend;
         } catch (Exception error) {
             close();
             throw error;
@@ -124,22 +131,79 @@ final class FastRvcNeuralEngine implements AutoCloseable {
         return at48k.length == audio48k.length ? at48k : resampleLinear(at48k, audio48k.length);
     }
 
-    private SessionOpen openOptimized(File file) throws Exception {
-        // XNNPACK gives substantially better ARM CPU kernels for many Conv/MatMul
-        // nodes.  If an ONNX graph cannot use it, fall back cleanly to CPU ORT.
+    private SessionOpen openBaseOptimized(File file) throws Exception {
+        int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
         try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
             options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             options.setInterOpNumThreads(1);
             options.setIntraOpNumThreads(1);
-            int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+            options.setMemoryPatternOptimization(true);
+            options.setCPUArenaAllocator(true);
+            options.addConfigEntry("session.intra_op.allow_spinning", "1");
             options.addXnnpack(Map.of("intra_op_num_threads", Integer.toString(threads)));
             return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "XNNPACK" + threads);
         } catch (Exception ignored) {
             try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
-                int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
                 options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
                 options.setInterOpNumThreads(1);
                 options.setIntraOpNumThreads(threads);
+                options.setMemoryPatternOptimization(true);
+                options.setCPUArenaAllocator(true);
+                options.addConfigEntry("session.intra_op.allow_spinning", "1");
+                return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "CPU" + threads);
+            }
+        }
+    }
+
+    private SessionOpen openSynthOptimized(File file) throws Exception {
+        // First choice: force NNAPI away from its CPU implementation so a successful
+        // session really means the Android accelerator accepted the graph. FP16 lets
+        // compatible NPU/GPU drivers reduce bandwidth and arithmetic cost.
+        try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            options.setInterOpNumThreads(1);
+            options.setIntraOpNumThreads(1);
+            options.setMemoryPatternOptimization(true);
+            options.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED));
+            return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "NNAPI-FP16-HW");
+        } catch (Exception ignored) {
+            // Some RVC graphs have a few operators NNAPI cannot accelerate. Let NNAPI
+            // take supported subgraphs and use ORT CPU only for the remaining nodes.
+            try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+                options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+                options.setInterOpNumThreads(1);
+                options.setIntraOpNumThreads(1);
+                options.setMemoryPatternOptimization(true);
+                options.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16));
+                return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "NNAPI-FP16");
+            } catch (Exception ignoredAgain) {
+                return openSynthCpuOptimized(file);
+            }
+        }
+    }
+
+    private SessionOpen openSynthCpuOptimized(File file) throws Exception {
+        // The synthesizer dominates the measured cost on the Galaxy A06. It can use
+        // two extra workers compared with the base models while leaving headroom for
+        // AudioRecord/AudioTrack and the WebRTC VAD thread.
+        int threads = Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors() - 1));
+        try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            options.setInterOpNumThreads(1);
+            options.setIntraOpNumThreads(1);
+            options.setMemoryPatternOptimization(true);
+            options.setCPUArenaAllocator(true);
+            options.addConfigEntry("session.intra_op.allow_spinning", "1");
+            options.addXnnpack(Map.of("intra_op_num_threads", Integer.toString(threads)));
+            return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "XNNPACK" + threads);
+        } catch (Exception ignored) {
+            try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+                options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+                options.setInterOpNumThreads(1);
+                options.setIntraOpNumThreads(threads);
+                options.setMemoryPatternOptimization(true);
+                options.setCPUArenaAllocator(true);
+                options.addConfigEntry("session.intra_op.allow_spinning", "1");
                 return new SessionOpen(env.createSession(file.getAbsolutePath(), options), "CPU" + threads);
             }
         }
