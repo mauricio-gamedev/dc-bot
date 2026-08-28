@@ -125,9 +125,34 @@ jobs:
         working-directory: samp-mobile
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace clean assembleDebug
+          set +e
+          ./gradlew --no-daemon --stacktrace clean assembleDebug 2>&1 | tee ../gta-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$BUILD_STATUS" -ne 0 ]]; then
+            {
+              echo "Build failed with exit code $BUILD_STATUS"
+              echo
+              echo "First compiler/build errors:"
+              grep -nEi "fatal error:|(^|[^[:alpha:]])error:|FAILED:|ninja: build stopped|Execution failed for task" ../gta-build.log | head -120 || true
+            } | tee ../gta-build-errors.txt
+          fi
+
+          exit "$BUILD_STATUS"
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA-SAMP-Mobile-build-diagnostics
+          path: |
+            gta-build.log
+            gta-build-errors.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Verify APK
         shell: bash
