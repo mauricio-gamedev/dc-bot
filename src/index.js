@@ -38,6 +38,12 @@ import {
   mindustryStatus,
 } from './core/mindustryInteractive.js';
 import {
+  handleTerrariaCommand,
+  handleTerrariaHttp,
+  terrariaCommandData,
+  terrariaStatus,
+} from './core/terrariaInteractive.js';
+import {
   handleKickLiveButton,
   kickLiveStatus,
   startKickLiveWatcher,
@@ -72,6 +78,7 @@ const registeredCommandData = [
   identityCommandData,
   minecraftCommandData,
   mindustryCommandData,
+  terrariaCommandData,
   kickInteractiveCommandData,
   voiceCommandData,
 ];
@@ -132,6 +139,7 @@ const healthServer = http.createServer(async (req, res) => {
   try {
     if (await handleKickInteractiveHttp(req, res, client)) return;
     if (await handleMindustryHttp(req, res, client)) return;
+    if (await handleTerrariaHttp(req, res, client)) return;
     if (await handleVoiceHttp(req, res, client)) return;
 
     const path = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
@@ -149,6 +157,7 @@ const healthServer = http.createServer(async (req, res) => {
     const kickChat = kickInteractiveStatus(guildId);
     const minecraft = minecraftBridgeStatus();
     const mindustry = mindustryStatus(guildId);
+    const terraria = terrariaStatus(guildId);
     const voice = voiceStatus(guildId);
     const automation = communityAutomationStatus();
     const body = {
@@ -184,6 +193,18 @@ const healthServer = http.createServer(async (req, res) => {
         interactionsOpen: mindustry.interactionsOpen,
         linkedAt: mindustry.linkedAt,
         lastSeenAt: mindustry.lastSeenAt,
+      },
+      terrariaInteractive: {
+        connected: terraria.connected,
+        tshockReady: terraria.tshockReady,
+        interactionsOpen: terraria.interactionsOpen,
+        linkedAt: terraria.linkedAt,
+        lastSeenAt: terraria.lastSeenAt,
+        lastActionAt: terraria.lastActionAt,
+        lastError: terraria.lastError,
+        playerName: terraria.playerName,
+        bridgeVersion: terraria.bridgeVersion,
+        queued: terraria.queued,
       },
       voiceInteractive: {
         connected: voice.connected,
@@ -269,6 +290,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleIdentityCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
     if (await handleVoiceCommand(interaction)) return;
+    if (await handleTerrariaCommand(interaction)) return;
     if (await handleMindustryCommand(interaction)) return;
     if (await handleMinecraftCommand(interaction)) return;
     if (await handleV3Button(interaction)) return;
