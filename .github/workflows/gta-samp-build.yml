@@ -106,6 +106,87 @@ jobs:
 
           echo "Restored native sources and normalized Linux packaging inputs."
 
+      - name: Patch Android runtime storage preflight
+        working-directory: samp-mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          base = Path("app/src/main/java/com/rockstargames/oswrapper/GameActivityBase.java")
+          text = base.read_text(encoding="utf-8")
+          old = 'File gameDir = new File(documentsDir, "VICE");'
+          new = 'File gameDir = new File(documentsDir, "GTA");'
+          if old not in text:
+              raise SystemExit("Expected VICE cache path not found in GameActivityBase.java")
+          base.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          main = Path("app/src/main/java/com/gta/launcher/activity/MainActivity.java")
+          text = main.read_text(encoding="utf-8")
+
+          import_anchor = "import android.widget.Toast;\n"
+          if "import java.io.File;" not in text:
+              if import_anchor not in text:
+                  raise SystemExit("Import anchor not found in MainActivity.java")
+              text = text.replace(import_anchor, import_anchor + "\nimport java.io.File;\n", 1)
+
+          old_method = '''    private void startGameIfReady() {
+              if (storagePermissionGranted) {
+                  startGame();
+              } else {
+                  Toast.makeText(this, "Нет доступа к хранилищу. Игра не может быть запущена.", Toast.LENGTH_LONG).show();
+              }
+          }
+          '''
+          new_method = '''    private void startGameIfReady() {
+              if (!storagePermissionGranted) {
+                  Toast.makeText(this, "Sem acesso ao armazenamento. O jogo não pode iniciar.", Toast.LENGTH_LONG).show();
+                  return;
+              }
+
+              File gtaDir = new File(Environment.getExternalStorageDirectory(), "GTA");
+              File[] gtaEntries = gtaDir.listFiles();
+              if (!gtaDir.isDirectory() || gtaEntries == null || gtaEntries.length == 0) {
+                  Log.e("MainActivity", "GTA data missing: " + gtaDir.getAbsolutePath());
+                  Toast.makeText(
+                          this,
+                          "Arquivos do GTA não encontrados. Coloque os dados do jogo em /storage/emulated/0/GTA/",
+                          Toast.LENGTH_LONG
+                  ).show();
+                  return;
+              }
+
+              startGame();
+          }
+          '''
+          if old_method not in text:
+              raise SystemExit("startGameIfReady method anchor not found")
+          text = text.replace(old_method, new_method, 1)
+
+          old_click = '''                        if (storagePermissionGranted) {
+                              startGame();
+                          } else {
+                              checkAndRequestStoragePermission();
+                          }
+          '''
+          new_click = '''                        if (storagePermissionGranted) {
+                              startGameIfReady();
+                          } else {
+                              checkAndRequestStoragePermission();
+                          }
+          '''
+          if old_click not in text:
+              raise SystemExit("Start button anchor not found")
+          text = text.replace(old_click, new_click, 1)
+          main.write_text(text, encoding="utf-8")
+
+          print("Patched cache root to /storage/emulated/0/GTA/ and added launcher preflight.")
+          PY
+
+          grep -n 'new File(documentsDir, "GTA")' app/src/main/java/com/rockstargames/oswrapper/GameActivityBase.java
+          grep -n 'Arquivos do GTA não encontrados' app/src/main/java/com/gta/launcher/activity/MainActivity.java
+
       - name: Use Java 17
         uses: actions/setup-java@v4
         with:
