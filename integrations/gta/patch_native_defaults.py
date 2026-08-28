@@ -29,7 +29,7 @@ def patch_imgui_font_fallback() -> None:
     text = replace_once(
         text,
         r'''if\s*\(font\s*==\s*nullptr\)\s*\{\s*Log::addParameter\("font",\s*font\);\s*return\s+false;\s*\}''',
-        '''if (font == nullptr)\n    {\n        Log::addParameter("External SA-MP font unavailable; using ImGui default font");\n        font = io.Fonts->AddFontDefault();\n    }\n\n    if (font == nullptr)\n    {\n        Log::addParameter("font", font);\n        return false;\n    }''',
+        '''if (font == nullptr)\n    {\n        font = io.Fonts->AddFontDefault();\n    }\n\n    if (font == nullptr)\n    {\n        Log::addParameter("font", font);\n        return false;\n    }''',
         "ImGui font fallback",
         flags=re.DOTALL,
     )
