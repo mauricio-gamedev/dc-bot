@@ -79,18 +79,19 @@ jobs:
           fi
 
           # The bundled source was authored on a case-insensitive filesystem.
-          # Normalize exact header casing required by includes when building on Linux.
-          if [[ ! -f "$EXPECTED" ]]; then
+          # Recreate case-only aliases as symlinks, not copies. Copies make clang
+          # treat the same header as two different files and can redefine classes.
+          if [[ ! -e "$EXPECTED" ]]; then
             ACTUAL="$(find app/src/main/cpp/samp/gui/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
             if [[ -n "$ACTUAL" ]]; then
-              cp "$ACTUAL" "$EXPECTED"
+              ln -s "$(basename "$ACTUAL")" "$EXPECTED"
             fi
           fi
 
-          if [[ ! -f "$RGBA_EXPECTED" ]]; then
+          if [[ ! -e "$RGBA_EXPECTED" ]]; then
             RGBA_ACTUAL="$(find app/src/main/cpp/samp/game -maxdepth 1 -type f -iname 'RGBA.h' -print -quit)"
             if [[ -n "$RGBA_ACTUAL" ]]; then
-              cp "$RGBA_ACTUAL" "$RGBA_EXPECTED"
+              ln -s "$(basename "$RGBA_ACTUAL")" "$RGBA_EXPECTED"
             fi
           fi
 
