@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           ZIP="app/src/main/cpp/cpp.zip"
-          EXPECTED="app/src/main/cpp/samp/samp_widgets/playerTabList.h"
+          EXPECTED="app/src/main/cpp/samp/gui/samp_widgets/playerTabList.h"
 
           if [[ -f "$EXPECTED" ]]; then
             echo "Native source tree is already complete."
@@ -61,13 +61,13 @@ jobs:
           FOUND="$(find .ci-cpp-bundle -type f -iname 'playerTabList.h' -print -quit)"
           if [[ -z "$FOUND" ]]; then
             echo "Bundled cpp.zip does not contain playerTabList.h" >&2
-            find .ci-cpp-bundle -maxdepth 4 -type d | sort | head -200
+            find .ci-cpp-bundle -maxdepth 5 -type d | sort | head -200
             exit 1
           fi
 
           case "$FOUND" in
-            */samp/samp_widgets/*)
-              ROOT="${FOUND%%/samp/samp_widgets/*}"
+            */samp/gui/samp_widgets/*)
+              ROOT="${FOUND%%/samp/gui/samp_widgets/*}"
               ;;
             *)
               echo "Found playerTabList.h at unexpected archive path: $FOUND" >&2
@@ -78,9 +78,10 @@ jobs:
           echo "Restoring native source overlay from: $ROOT"
           rsync -a "$ROOT/" app/src/main/cpp/
 
-          # Linux paths are case-sensitive; normalize the exact include spelling if needed.
+          # The bundled source was authored on a case-insensitive filesystem.
+          # Normalize the exact case required by gui.h when building on Linux.
           if [[ ! -f "$EXPECTED" ]]; then
-            ACTUAL="$(find app/src/main/cpp/samp/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
+            ACTUAL="$(find app/src/main/cpp/samp/gui/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
             if [[ -n "$ACTUAL" ]]; then
               cp "$ACTUAL" "$EXPECTED"
             fi
