@@ -110,7 +110,6 @@ final class RvcNeuralEngine implements AutoCloseable {
         int rateConvertedLength = Math.max(1, Math.round(generated.length * 48_000f / modelInfo.sampleRate));
         float[] at48k = resampleLinear(generated, rateConvertedLength);
 
-        // Streaming monitor must keep the same clock as the captured chunk.
         if (at48k.length == audio48k.length) return at48k;
         return resampleLinear(at48k, audio48k.length);
     }
@@ -123,7 +122,7 @@ final class RvcNeuralEngine implements AutoCloseable {
         return env.createSession(file.getAbsolutePath(), options);
     }
 
-    private void validateSchemas() {
+    private void validateSchemas() throws OrtException {
         requireInput(hubert, "audio");
         requireInput(rmvpe, "waveform");
         requireInput(rmvpe, "threshold");
@@ -144,7 +143,7 @@ final class RvcNeuralEngine implements AutoCloseable {
         }
     }
 
-    private static void requireInput(OrtSession session, String name) {
+    private static void requireInput(OrtSession session, String name) throws OrtException {
         if (!session.getInputInfo().containsKey(name)) {
             throw new IllegalArgumentException("onnx_input_missing:" + name);
         }
@@ -227,7 +226,7 @@ final class RvcNeuralEngine implements AutoCloseable {
         }
     }
 
-    private String chooseHubertOutput(OrtSession session) {
+    private String chooseHubertOutput(OrtSession session) throws OrtException {
         String preferred;
         if (embOutputLayer == 9 && useFinalProj) preferred = "units9";
         else if (embOutputLayer == 12 && useFinalProj) preferred = "unit12s";
