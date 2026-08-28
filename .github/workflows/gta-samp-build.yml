@@ -43,43 +43,43 @@ jobs:
           set -euo pipefail
           ZIP="app/src/main/cpp/cpp.zip"
           EXPECTED="app/src/main/cpp/samp/gui/samp_widgets/playerTabList.h"
+          RGBA_EXPECTED="app/src/main/cpp/samp/game/RGBA.h"
 
           if [[ -f "$EXPECTED" ]]; then
             echo "Native source tree is already complete."
-            exit 0
-          fi
-
-          if [[ ! -f "$ZIP" ]]; then
-            echo "Missing both $EXPECTED and bundled native archive $ZIP" >&2
-            exit 1
-          fi
-
-          rm -rf .ci-cpp-bundle
-          mkdir -p .ci-cpp-bundle
-          unzip -q "$ZIP" -d .ci-cpp-bundle
-
-          FOUND="$(find .ci-cpp-bundle -type f -iname 'playerTabList.h' -print -quit)"
-          if [[ -z "$FOUND" ]]; then
-            echo "Bundled cpp.zip does not contain playerTabList.h" >&2
-            find .ci-cpp-bundle -maxdepth 5 -type d | sort | head -200
-            exit 1
-          fi
-
-          case "$FOUND" in
-            */samp/gui/samp_widgets/*)
-              ROOT="${FOUND%%/samp/gui/samp_widgets/*}"
-              ;;
-            *)
-              echo "Found playerTabList.h at unexpected archive path: $FOUND" >&2
+          else
+            if [[ ! -f "$ZIP" ]]; then
+              echo "Missing both $EXPECTED and bundled native archive $ZIP" >&2
               exit 1
-              ;;
-          esac
+            fi
 
-          echo "Restoring native source overlay from: $ROOT"
-          rsync -a "$ROOT/" app/src/main/cpp/
+            rm -rf .ci-cpp-bundle
+            mkdir -p .ci-cpp-bundle
+            unzip -q "$ZIP" -d .ci-cpp-bundle
+
+            FOUND="$(find .ci-cpp-bundle -type f -iname 'playerTabList.h' -print -quit)"
+            if [[ -z "$FOUND" ]]; then
+              echo "Bundled cpp.zip does not contain playerTabList.h" >&2
+              find .ci-cpp-bundle -maxdepth 5 -type d | sort | head -200
+              exit 1
+            fi
+
+            case "$FOUND" in
+              */samp/gui/samp_widgets/*)
+                ROOT="${FOUND%%/samp/gui/samp_widgets/*}"
+                ;;
+              *)
+                echo "Found playerTabList.h at unexpected archive path: $FOUND" >&2
+                exit 1
+                ;;
+            esac
+
+            echo "Restoring native source overlay from: $ROOT"
+            rsync -a "$ROOT/" app/src/main/cpp/
+          fi
 
           # The bundled source was authored on a case-insensitive filesystem.
-          # Normalize the exact case required by gui.h when building on Linux.
+          # Normalize exact header casing required by includes when building on Linux.
           if [[ ! -f "$EXPECTED" ]]; then
             ACTUAL="$(find app/src/main/cpp/samp/gui/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
             if [[ -n "$ACTUAL" ]]; then
@@ -87,8 +87,16 @@ jobs:
             fi
           fi
 
+          if [[ ! -f "$RGBA_EXPECTED" ]]; then
+            RGBA_ACTUAL="$(find app/src/main/cpp/samp/game -maxdepth 1 -type f -iname 'RGBA.h' -print -quit)"
+            if [[ -n "$RGBA_ACTUAL" ]]; then
+              cp "$RGBA_ACTUAL" "$RGBA_EXPECTED"
+            fi
+          fi
+
           test -f "$EXPECTED"
-          echo "Restored required native header: $EXPECTED"
+          test -f "$RGBA_EXPECTED"
+          echo "Restored required native headers: $EXPECTED and $RGBA_EXPECTED"
 
       - name: Use Java 17
         uses: actions/setup-java@v4
