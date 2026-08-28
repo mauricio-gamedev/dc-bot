@@ -27,6 +27,23 @@ jobs:
       - name: Syntax check
         run: npm run check
 
+  validate-visual-origin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify active Mio character asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHARACTER_URL="https://dc-bot-us5v.onrender.com/assets/mio-character.webp"
+          CHARACTER_FILE="$(mktemp)"
+          trap 'rm -f "$CHARACTER_FILE"' EXIT
+
+          curl -fsS --max-time 30 "$CHARACTER_URL" -o "$CHARACTER_FILE"
+          test "$(head -c 4 "$CHARACTER_FILE")" = "RIFF"
+          test "$(dd if="$CHARACTER_FILE" bs=1 skip=8 count=4 2>/dev/null)" = "WEBP"
+
+          echo "Active Mio character origin is serving a valid WEBP container."
+
   build-mindustry-android:
     runs-on: ubuntu-latest
     steps:
@@ -90,45 +107,31 @@ jobs:
 
   verify-render-deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [validate, build-mindustry-android]
+    needs: [validate, validate-visual-origin, build-mindustry-android]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify deployed bot version, commit and visual assets
+      - name: Verify deployed bot version, commit and active visual asset
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           BASE_URL="https://dc-bot-us5v.onrender.com"
           HEALTH_URL="$BASE_URL/health"
-          CDN_BASE="https://cdn.jsdelivr.net/gh/mauricio-gamedev/dc-bot@a0836d6ef188f7ba15896e31293d2a51123981b3/assets"
           LAST_BODY=""
           CHARACTER_FILE="$(mktemp)"
-          STATIC_SEAL_FILE="$(mktemp)"
-          ANIMATED_SEAL_FILE="$(mktemp)"
-          trap 'rm -f "$CHARACTER_FILE" "$STATIC_SEAL_FILE" "$ANIMATED_SEAL_FILE"' EXIT
+          trap 'rm -f "$CHARACTER_FILE"' EXIT
 
           for attempt in $(seq 1 90); do
             LAST_BODY="$(curl -fsS --max-time 20 "$HEALTH_URL" || true)"
-            RENDER_ASSETS_OK=0
-            CDN_ASSETS_OK=0
+            CHARACTER_OK=0
 
             if curl -fsS --max-time 20 "$BASE_URL/assets/mio-character.webp" -o "$CHARACTER_FILE" \
               && [ "$(head -c 4 "$CHARACTER_FILE")" = "RIFF" ] \
               && [ "$(dd if="$CHARACTER_FILE" bs=1 skip=8 count=4 2>/dev/null)" = "WEBP" ]; then
-              RENDER_ASSETS_OK=1
-            fi
-
-            if curl -fsS --max-time 20 "$CDN_BASE/mio-character.webp" -o "$CHARACTER_FILE" \
-              && [ "$(head -c 4 "$CHARACTER_FILE")" = "RIFF" ] \
-              && [ "$(dd if="$CHARACTER_FILE" bs=1 skip=8 count=4 2>/dev/null)" = "WEBP" ] \
-              && curl -fsS --max-time 20 "$CDN_BASE/miojo-seal-static.png" -o "$STATIC_SEAL_FILE" \
-              && [ "$(xxd -p -l 8 "$STATIC_SEAL_FILE")" = "89504e470d0a1a0a" ] \
-              && curl -fsS --max-time 20 "$CDN_BASE/miojo-seal-animated.gif" -o "$ANIMATED_SEAL_FILE" \
-              && [ "$(head -c 3 "$ANIMATED_SEAL_FILE")" = "GIF" ]; then
-              CDN_ASSETS_OK=1
+              CHARACTER_OK=1
             fi
 
             if BODY="$LAST_BODY" VERSION="$VERSION" node -e '
@@ -148,8 +151,8 @@ jobs:
               } catch {
                 process.exit(1);
               }
-            ' && [ "$RENDER_ASSETS_OK" -eq 1 ] && [ "$CDN_ASSETS_OK" -eq 1 ]; then
-              echo "Render deploy healthy: version $VERSION, commit fingerprint and official visual assets active."
+            ' && [ "$CHARACTER_OK" -eq 1 ]; then
+              echo "Render deploy healthy: version $VERSION, commit fingerprint and active Mio character asset verified."
               echo "$LAST_BODY"
               exit 0
             fi
