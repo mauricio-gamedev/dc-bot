@@ -8,23 +8,25 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Keeps heavy RVC inference off the real-time AudioRecord/AudioTrack thread.
+ * Keeps heavy RVC inference away from the AudioRecord/AudioTrack thread.
  *
- * v0.1.4 deliberately uses ~480 ms chunks. That is not the final gaming
- * latency target, but it makes the first neural voice path usable without
- * blocking the lightweight DSP monitor or freezing a low-end phone.
+ * v0.1.6 also avoids wasting inference on silence and never leaks the Lite
+ * voice into gaps while neural mode is active.
  */
 final class NeuralStreamProcessor implements AutoCloseable {
     private static final int CHUNK_SAMPLES = 23_040; // 480 ms @ 48 kHz
+    private static final int CHUNK_MS = 480;
+    private static final int MIN_FLUSH_SAMPLES = 2_400; // 50 ms tail
 
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final ArrayBlockingQueue<float[]> inputQueue = new ArrayBlockingQueue<>(1);
     private final ArrayBlockingQueue<short[]> outputQueue = new ArrayBlockingQueue<>(2);
     private final float[] captureChunk = new float[CHUNK_SAMPLES];
     private int capturePosition = 0;
+    private boolean previousSpeech = false;
 
     private Thread worker;
-    private RvcNeuralEngine engine;
+    private FastRvcNeuralEngine engine;
     private short[] currentOutput;
     private int currentOutputPosition = 0;
 
@@ -36,6 +38,7 @@ final class NeuralStreamProcessor implements AutoCloseable {
     private volatile int transpose = 0;
     private volatile int lastInferenceMs = -1;
     private volatile int droppedChunks = 0;
+    private volatile int skippedSilentChunks = 0;
 
     private String hubertPath = "";
     private String rmvpePath = "";
@@ -44,7 +47,7 @@ final class NeuralStreamProcessor implements AutoCloseable {
 
     NeuralStreamProcessor(Context context) {
         worker = new Thread(this::workerLoop, "mio-neural-rvc");
-        worker.setPriority(Thread.NORM_PRIORITY);
+        worker.setPriority(Math.min(Thread.MAX_PRIORITY - 1, Thread.NORM_PRIORITY + 2));
         worker.start();
     }
 
@@ -101,29 +104,39 @@ final class NeuralStreamProcessor implements AutoCloseable {
     boolean process(short[] input, short[] output, int length, boolean speech) {
         if (!enabled || !ready || input == null || output == null || length <= 0) return false;
 
-        for (int i = 0; i < length; i++) {
-            captureChunk[capturePosition++] = speech ? input[i] / 32768f : 0f;
-            if (capturePosition >= captureChunk.length) {
-                float[] chunk = captureChunk.clone();
-                capturePosition = 0;
-                if (!inputQueue.offer(chunk)) {
-                    inputQueue.poll();
-                    inputQueue.offer(chunk);
-                    droppedChunks++;
-                    status = "sobrecarga neural • reduzindo fila";
+        if (speech) {
+            for (int i = 0; i < length; i++) {
+                captureChunk[capturePosition++] = input[i] / 32768f;
+                if (capturePosition >= captureChunk.length) {
+                    enqueueCapturedChunk(false);
                 }
             }
+            previousSpeech = true;
+        } else {
+            // WebRTC VAD already has a hangover. Once it closes, flush only the
+            // final spoken tail and then stop invoking HuBERT/RMVPE on zeros.
+            if (previousSpeech) {
+                if (capturePosition >= MIN_FLUSH_SAMPLES) {
+                    enqueueCapturedChunk(true);
+                } else {
+                    capturePosition = 0;
+                }
+            }
+            previousSpeech = false;
+            skippedSilentChunks++;
         }
 
         if (currentOutput == null || currentOutputPosition >= currentOutput.length) {
             currentOutput = outputQueue.poll();
             currentOutputPosition = 0;
         }
-        if (currentOutput == null) return false;
 
         int written = 0;
         while (written < length) {
             if (currentOutput == null) {
+                // Neural mode must not fall through to the Lite voice. Waiting
+                // for inference is represented as silence instead of a second,
+                // unmodified voice leaking through the monitor.
                 while (written < length) output[written++] = 0;
                 break;
             }
@@ -140,30 +153,32 @@ final class NeuralStreamProcessor implements AutoCloseable {
         return true;
     }
 
-    boolean isEnabled() {
-        return enabled;
-    }
-
-    boolean isReady() {
-        return ready;
-    }
-
-    String getStatus() {
-        return status;
-    }
-
-    int getLastInferenceMs() {
-        return lastInferenceMs;
-    }
+    boolean isEnabled() { return enabled; }
+    boolean isReady() { return ready; }
+    String getStatus() { return status; }
+    int getLastInferenceMs() { return lastInferenceMs; }
 
     int getEstimatedLatencyMs() {
         if (!enabled) return -1;
         int inference = Math.max(0, lastInferenceMs);
-        return 480 + inference;
+        return CHUNK_MS + inference;
     }
 
-    int getDroppedChunks() {
-        return droppedChunks;
+    int getDroppedChunks() { return droppedChunks; }
+
+    private void enqueueCapturedChunk(boolean padTail) {
+        if (capturePosition <= 0) return;
+        if (padTail) {
+            for (int i = capturePosition; i < captureChunk.length; i++) captureChunk[i] = 0f;
+        }
+        float[] chunk = captureChunk.clone();
+        capturePosition = 0;
+        if (!inputQueue.offer(chunk)) {
+            inputQueue.poll();
+            inputQueue.offer(chunk);
+            droppedChunks++;
+            status = "sobrecarga neural • mantendo só a fala mais recente";
+        }
     }
 
     private void workerLoop() {
@@ -186,10 +201,12 @@ final class NeuralStreamProcessor implements AutoCloseable {
                     outputQueue.offer(pcm);
                     droppedChunks++;
                 }
-                float realtime = lastInferenceMs / 480f;
-                status = realtime <= 1.0f
-                    ? "neural pronto • " + voiceLabel
-                    : "neural lento x" + String.format(java.util.Locale.US, "%.1f", realtime) + " • " + voiceLabel;
+
+                float realtime = lastInferenceMs / (float) CHUNK_MS;
+                String speed = realtime <= 1.0f
+                    ? "tempo real"
+                    : "lento x" + String.format(java.util.Locale.US, "%.1f", realtime);
+                status = "neural " + speed + " • " + voiceLabel + " • " + engine.getTimingSummary();
             } catch (InterruptedException ignored) {
                 // Configuration wake-up.
             } catch (Exception error) {
@@ -209,11 +226,12 @@ final class NeuralStreamProcessor implements AutoCloseable {
             File hubert = new File(hubertPath);
             File rmvpe = new File(rmvpePath);
             File synth = new File(synthPath);
-            engine = new RvcNeuralEngine(hubert, rmvpe, synth, voiceLabel);
+            engine = new FastRvcNeuralEngine(hubert, rmvpe, synth, voiceLabel);
             ready = true;
-            status = "neural pronto • " + engine.getModelInfo().label;
+            status = "neural pronto • " + voiceLabel + " • aguardando fala";
             lastInferenceMs = -1;
             droppedChunks = 0;
+            skippedSilentChunks = 0;
         } catch (Exception error) {
             ready = false;
             status = "modelo incompatível: " + safeMessage(error);
@@ -227,12 +245,11 @@ final class NeuralStreamProcessor implements AutoCloseable {
         currentOutput = null;
         currentOutputPosition = 0;
         capturePosition = 0;
+        previousSpeech = false;
     }
 
     private void closeEngine() {
-        try {
-            if (engine != null) engine.close();
-        } catch (Exception ignored) {}
+        try { if (engine != null) engine.close(); } catch (Exception ignored) {}
         engine = null;
     }
 
@@ -263,9 +280,7 @@ final class NeuralStreamProcessor implements AutoCloseable {
         return output;
     }
 
-    private static String safe(String value) {
-        return value == null ? "" : value;
-    }
+    private static String safe(String value) { return value == null ? "" : value; }
 
     private static String safeMessage(Exception error) {
         String message = error.getMessage();
