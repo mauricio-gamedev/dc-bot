@@ -4,8 +4,6 @@ import { BRAND } from './blueprint.js';
 const OFFICIAL_ASSET_BASE = 'https://dc-bot-us5v.onrender.com/assets';
 const ASSET_VERSIONS = Object.freeze({
   character: 'a11b18ed09704b11de301704edb572c778b58df9',
-  badgeStatic: '6c10d3f430be1fb31b1862521b56b9b69d80a81d',
-  badgeAnimated: 'ba455cc4ce01c13fe490e7d80872e75ebdf6d31f',
 });
 
 function officialAsset(filename, version) {
@@ -13,8 +11,6 @@ function officialAsset(filename, version) {
 }
 
 const DEFAULT_CHARACTER_ASSET = officialAsset('mio-character.webp', ASSET_VERSIONS.character);
-const DEFAULT_BADGE_STATIC = officialAsset('miojo-seal-static.png', ASSET_VERSIONS.badgeStatic);
-const DEFAULT_BADGE_ANIMATED = officialAsset('miojo-seal-animated.gif', ASSET_VERSIONS.badgeAnimated);
 
 export const CHARACTER = {
   name: 'Mio',
@@ -48,8 +44,10 @@ export function characterAssets() {
   const avatar = validHttpUrl(process.env.MIO_CHARACTER_IMAGE_URL) ?? DEFAULT_CHARACTER_ASSET;
   const banner = validHttpUrl(process.env.MIO_CHARACTER_BANNER_URL);
   const profile = validHttpUrl(process.env.MIO_CHARACTER_PROFILE_URL) ?? banner ?? avatar;
-  const badge = validHttpUrl(process.env.MIO_BADGE_IMAGE_URL) ?? DEFAULT_BADGE_STATIC;
-  const animatedBadge = validHttpUrl(process.env.MIO_BADGE_ANIMATED_URL) ?? DEFAULT_BADGE_ANIMATED;
+  // Os arquivos de selo empacotados atuais não possuem assinatura PNG/GIF válida.
+  // Até serem substituídos conscientemente por assets válidos, só aceitamos overrides explícitos.
+  const badge = validHttpUrl(process.env.MIO_BADGE_IMAGE_URL);
+  const animatedBadge = validHttpUrl(process.env.MIO_BADGE_ANIMATED_URL);
   return { avatar, banner, profile, badge, animatedBadge };
 }
 
@@ -164,6 +162,6 @@ export function characterVisualStatus() {
     heroReady: Boolean(assets.profile),
     badgeReady: Boolean(assets.badge || assets.animatedBadge),
     assets,
-    fallback: `${BRAND.name} usa os assets oficiais empacotados no repositório.`,
+    fallback: `${BRAND.name} usa o personagem oficial empacotado no repositório; selos inválidos ficam desativados até reposição válida.`,
   };
 }
