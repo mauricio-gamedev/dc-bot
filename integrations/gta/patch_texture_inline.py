@@ -1,41 +1,52 @@
 from pathlib import Path
+import re
 
 HOOKS = Path("app/src/main/cpp/samp/game/hooks.cpp")
-
-OLD = '''    CHook::InstallPLT(
-            g_libGTASA + kTextureDatabaseRuntimeLoadGot,
-            &TextureDatabaseRuntimeLoadCompat,
-            &g_textureDatabaseRuntimeLoadOriginal);'''
-
-NEW = '''    // TextureCompat v3: hook the real libGame function entry directly.
-    // Internal BL calls inside libGame bypass the GOT/PLT slot used by v2.
-    CHook::InlineHook(
-            g_libGTASA + 0x797A84,
-            &TextureDatabaseRuntimeLoadCompat,
-            &g_textureDatabaseRuntimeLoadOriginal);'''
 
 
 def main() -> None:
     text = HOOKS.read_text(encoding="utf-8-sig")
 
-    if OLD not in text:
-        raise SystemExit("TextureCompat v2 runtime-load PLT hook block not found")
+    # Root cause: the stock ARM64 libGame already contains PVR texture paths at
+    # 0x24E4C4 and 0x246D17, but InstallUrezHooks() mutates those strings to DXT
+    # during startup. That runtime rewrite is exactly why a PVR cache is opened as
+    # player.dxt.tmb. Keep libGame's native PVR strings intact instead of trying to
+    # hook TextureDatabaseRuntime::Load after the fact.
+    required_fragments = [
+        "void InstallUrezHooks()",
+        "g_libGTASA + 0x24E4C4",
+        "g_libGTASA + 0x246D17",
+        "= 'd';",
+        "= 'x';",
+        "= 't';",
+    ]
+    for fragment in required_fragments:
+        if fragment not in text:
+            raise SystemExit(f"Expected upstream DXT rewrite fragment missing: {fragment}")
 
-    text = text.replace(OLD, NEW, 1)
-    text = text.replace(
-        '[TextureCompat] v2 PLT hooks installed | Load=0x849430 Thumbs=0x84EB88',
-        '[TextureCompat] v3 hooks installed | Load=direct@0x797A84 Thumbs=GOT@0x84EB88',
-        1,
+    pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)InstallUrezHooks\(\);[ \t]*$"
     )
+    match = pattern.search(text)
+    if not match:
+        raise SystemExit("InstallSpecialHooks no longer calls InstallUrezHooks")
+
+    indent = match.group("indent")
+    replacement = (
+        f'{indent}// TextureCompat v4: do NOT rewrite libGame PVR paths to DXT.\n'
+        f'{indent}Log("[TextureCompat] v4 | disabled InstallUrezHooks DXT rewrite; keeping native PVR paths");'
+    )
+    text = text[:match.start()] + replacement + text[match.end():]
 
     HOOKS.write_text(text, encoding="utf-8")
 
     verify = HOOKS.read_text(encoding="utf-8")
-    assert "g_libGTASA + 0x797A84" in verify
-    assert "TextureCompat] v3 hooks installed" in verify
-    assert OLD not in verify
+    assert "[TextureCompat] v4 | disabled InstallUrezHooks DXT rewrite" in verify
+    install_special = verify[verify.index("void InstallSpecialHooks()") :]
+    install_special = install_special[: install_special.find("}") + 1]
+    assert "InstallUrezHooks();" not in install_special
 
-    print("Patched TextureDatabaseRuntime::Load with direct ARM64 function-entry hook (TextureCompat v3).")
+    print("TextureCompat v4: disabled the upstream runtime DXT string rewrite; native PVR paths stay intact.")
 
 
 if __name__ == "__main__":
