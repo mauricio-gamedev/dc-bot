@@ -50,7 +50,11 @@ public final class VoiceService extends Service {
         running.set(false);
         if (pollThread != null) pollThread.interrupt();
         if (engine != null) engine.stop();
-        prefs.edit().putString(MainActivity.KEY_STATUS, "parado").apply();
+        prefs.edit()
+            .putString(MainActivity.KEY_STATUS, "parado")
+            .putBoolean(MainActivity.KEY_VAD_ACTIVE, false)
+            .putInt(MainActivity.KEY_VAD_CONFIDENCE, 0)
+            .apply();
         super.onDestroy();
     }
 
@@ -83,8 +87,12 @@ public final class VoiceService extends Service {
 
                 int volume = prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55);
                 int cleanup = prefs.getInt(MainActivity.KEY_CLEANUP, 82);
+                boolean vadEnabled = prefs.getBoolean(MainActivity.KEY_VAD_ENABLED, true);
+                boolean vadActive = engine.isVoiceDetected();
+                int vadConfidence = engine.getVoiceConfidence();
                 updateNotification(
-                    "Ativo • " + config.label + " • efeito " + config.intensity + "% • vol " + volume + "% • limpeza " + cleanup + "%"
+                    "Ativo • " + config.label + " • efeito " + config.intensity + "% • vol " + volume + "% • "
+                        + (vadEnabled ? (vadActive ? "voz " + vadConfidence + "%" : "silêncio") : "VAD off")
                 );
 
                 String route = detectRoute();
@@ -94,6 +102,8 @@ public final class VoiceService extends Service {
                     .putString(MainActivity.KEY_PRESET, config.label)
                     .putString(MainActivity.KEY_ROUTE, route)
                     .putInt(MainActivity.KEY_LATENCY, latency)
+                    .putBoolean(MainActivity.KEY_VAD_ACTIVE, vadEnabled && vadActive)
+                    .putInt(MainActivity.KEY_VAD_CONFIDENCE, vadEnabled ? vadConfidence : 0)
                     .apply();
 
                 reportCounter++;
@@ -124,8 +134,10 @@ public final class VoiceService extends Service {
     private void applyLocalAudioSettings() {
         int volume = Math.max(20, Math.min(100, prefs.getInt(MainActivity.KEY_MONITOR_VOLUME, 55)));
         int cleanup = Math.max(0, Math.min(100, prefs.getInt(MainActivity.KEY_CLEANUP, 82)));
+        boolean vad = prefs.getBoolean(MainActivity.KEY_VAD_ENABLED, true);
         engine.setMonitorVolume(volume / 100f);
         engine.setCleanupStrength(cleanup / 100f);
+        engine.setVadEnabled(vad);
     }
 
     private String detectRoute() {
