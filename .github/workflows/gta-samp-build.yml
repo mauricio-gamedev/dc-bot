@@ -97,7 +97,14 @@ jobs:
 
           test -f "$EXPECTED"
           test -f "$RGBA_EXPECTED"
-          echo "Restored required native headers: $EXPECTED and $RGBA_EXPECTED"
+
+          # CMake links and exports these BASS shared libraries from vendor/bass.
+          # Keeping second copies under jniLibs makes AGP fail mergeDebugNativeLibs.
+          rm -f \
+            app/src/main/jniLibs/arm64-v8a/libbass.so \
+            app/src/main/jniLibs/arm64-v8a/libbass_ssl.so
+
+          echo "Restored native sources and normalized Linux packaging inputs."
 
       - name: Use Java 17
         uses: actions/setup-java@v4
@@ -138,7 +145,7 @@ jobs:
               echo "Build failed with exit code $BUILD_STATUS"
               echo
               echo "First compiler/build errors:"
-              grep -nEi "fatal error:|(^|[^[:alpha:]])error:|FAILED:|ninja: build stopped|Execution failed for task" ../gta-build.log | head -120 || true
+              grep -nEi "fatal error:|(^|[^[:alpha:]])error:|FAILED:|ninja: build stopped|Execution failed for task|files found with path" ../gta-build.log | head -120 || true
             } | tee ../gta-build-errors.txt
           fi
 
