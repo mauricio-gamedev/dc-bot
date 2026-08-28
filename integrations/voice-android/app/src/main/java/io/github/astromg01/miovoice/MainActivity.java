@@ -112,9 +112,10 @@ public final class MainActivity extends Activity {
         root.addView(refresh);
 
         TextView note = text(
-            "Protótipo Android v0.1: o áudio é processado localmente e nunca é enviado ao Render. " +
-            "Neste estágio o app entrega monitor de voz em tempo real. O modo microfone virtual para jogos " +
-            "continua experimental porque o Android comum bloqueia a substituição do microfone de outro app.",
+            "Protótipo Android v0.1.1: o áudio é processado localmente e nunca é enviado ao Render. " +
+            "O monitor agora evita misturar a voz original com a transformada e usa cancelamento de eco quando o aparelho oferece suporte. " +
+            "Para testar sem microfonia, prefira fone/headset. O modo microfone virtual para jogos continua experimental porque o Android comum " +
+            "bloqueia a substituição do microfone de outro app.",
             14,
             false
         );
