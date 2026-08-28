@@ -1,0 +1,89 @@
+name: Build GTA SA-MP Mobile
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/gta-samp-build.yml'
+      - 'integrations/gta/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-gta-samp-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      SAMP_REPOSITORY: kuzia15/SAMP-Mobile
+      SAMP_REF: 5e531514a0bbb3d56b1a72e51fa44b18cfaf2ee2
+      ANDROID_PLATFORM: '36'
+      ANDROID_BUILD_TOOLS: '36.0.0'
+      ANDROID_NDK: '26.2.11394342'
+      CMAKE_VERSION: '3.22.1'
+
+    steps:
+      - name: Checkout build harness
+        uses: actions/checkout@v4
+
+      - name: Checkout SA-MP Mobile GTA 2.11
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SAMP_REPOSITORY }}
+          ref: ${{ env.SAMP_REF }}
+          path: samp-mobile
+          fetch-depth: 1
+
+      - name: Use Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK}" \
+            "cmake;${CMAKE_VERSION}"
+
+      - name: Build ARM64 debug APK
+        working-directory: samp-mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace clean assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="samp-mobile/app/build/outputs/apk/debug/GTA-2.11-debug.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
+          sha256sum "$APK" | tee GTA-2.11-debug.apk.sha256
+          cp "$APK" GTA-2.11-debug.apk
+          ls -lh GTA-2.11-debug.apk GTA-2.11-debug.apk.sha256
+
+      - name: Upload GTA SA-MP Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA-SAMP-Mobile-Android-arm64
+          path: |
+            GTA-2.11-debug.apk
+            GTA-2.11-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
