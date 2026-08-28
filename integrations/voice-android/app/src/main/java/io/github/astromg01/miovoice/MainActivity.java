@@ -17,6 +17,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -27,10 +28,14 @@ public final class MainActivity extends Activity {
     static final String KEY_STATUS = "status";
     static final String KEY_ROUTE = "route";
     static final String KEY_LATENCY = "latency";
+    static final String KEY_MONITOR_VOLUME = "monitor_volume";
+    static final String KEY_CLEANUP = "cleanup_strength";
 
     private TextView connectionView;
     private TextView presetView;
     private TextView routeView;
+    private TextView volumeLabel;
+    private TextView cleanupLabel;
     private EditText codeInput;
     private SharedPreferences prefs;
 
@@ -74,6 +79,57 @@ public final class MainActivity extends Activity {
         root.addView(presetView);
         root.addView(routeView);
 
+        TextView audioTitle = text("Ajustes locais", 18, true);
+        audioTitle.setTextColor(Color.WHITE);
+        audioTitle.setPadding(0, dp(18), 0, dp(6));
+        root.addView(audioTitle);
+
+        volumeLabel = text("", 15, false);
+        volumeLabel.setTextColor(Color.LTGRAY);
+        root.addView(volumeLabel);
+
+        SeekBar volume = new SeekBar(this);
+        volume.setMin(20);
+        volume.setMax(100);
+        volume.setProgress(prefs.getInt(KEY_MONITOR_VOLUME, 55));
+        volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int safe = Math.max(20, Math.min(100, progress));
+                volumeLabel.setText("🔊 Volume do monitor: " + safe + "%");
+                if (fromUser) prefs.edit().putInt(KEY_MONITOR_VOLUME, safe).apply();
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        root.addView(volume);
+
+        cleanupLabel = text("", 15, false);
+        cleanupLabel.setTextColor(Color.LTGRAY);
+        cleanupLabel.setPadding(0, dp(4), 0, 0);
+        root.addView(cleanupLabel);
+
+        SeekBar cleanup = new SeekBar(this);
+        cleanup.setMin(0);
+        cleanup.setMax(100);
+        cleanup.setProgress(prefs.getInt(KEY_CLEANUP, 82));
+        cleanup.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int safe = Math.max(0, Math.min(100, progress));
+                cleanupLabel.setText("🧹 Limpeza do mic: " + safe + "%");
+                if (fromUser) prefs.edit().putInt(KEY_CLEANUP, safe).apply();
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        root.addView(cleanup);
+
+        volumeLabel.setText("🔊 Volume do monitor: " + volume.getProgress() + "%");
+        cleanupLabel.setText("🧹 Limpeza do mic: " + cleanup.getProgress() + "%");
+
         TextView pairTitle = text("Vincular com o bot", 18, true);
         pairTitle.setTextColor(Color.WHITE);
         pairTitle.setPadding(0, dp(24), 0, dp(8));
@@ -112,10 +168,10 @@ public final class MainActivity extends Activity {
         root.addView(refresh);
 
         TextView note = text(
-            "Protótipo Android v0.1.1: o áudio é processado localmente e nunca é enviado ao Render. " +
-            "O monitor agora evita misturar a voz original com a transformada e usa cancelamento de eco quando o aparelho oferece suporte. " +
-            "Para testar sem microfonia, prefira fone/headset. O modo microfone virtual para jogos continua experimental porque o Android comum " +
-            "bloqueia a substituição do microfone de outro app.",
+            "Protótipo Android v0.1.2: o áudio continua 100% local. A limpeza usa o supressor nativo do Android quando disponível, " +
+            "cancelamento de eco, gate/expander adaptativo e corte de ruído grave. O volume do monitor é independente da intensidade do personagem. " +
+            "Se a limpeza cortar final de palavras, reduza alguns pontos. Para monitor sem microfonia, prefira fone/headset. " +
+            "O modo microfone virtual para jogos continua experimental porque o Android comum bloqueia a substituição do microfone de outro app.",
             14,
             false
         );
