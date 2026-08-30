@@ -21,4 +21,11 @@ assertUnique(IDENTITY_ROLE_NAMES, 'Cargo cosmético');
 const overlap = IDENTITY_ROLE_NAMES.filter((name) => ROLE_BLUEPRINT.some((role) => role.name === name));
 if (overlap.length) throw new Error(`Cargo cosmético conflita com cargo base: ${overlap.join(', ')}`);
 
+const commandChannel = CATEGORY_BLUEPRINT
+  .flatMap((category) => category.channels)
+  .find((channel) => channel.name === '🤖・comandos');
+
+if (!commandChannel) throw new Error('Canal público de comandos não está definido.');
+if (!commandChannel.readOnly) throw new Error('Canal público de comandos precisa ser somente leitura.');
+
 console.log('community config ok');
