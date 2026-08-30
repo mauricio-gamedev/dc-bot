@@ -8,6 +8,7 @@ const commandCooldowns = new Map();
 const OWNER_ONLY_COMMANDS = new Set([
   'coins-dono',
   'kickbot',
+  'voz',
 ]);
 
 const PERMISSION_COMMANDS = new Map([
@@ -25,7 +26,6 @@ const PERMISSION_COMMANDS = new Map([
 const OWNER_SUBCOMMANDS = new Map([
   ['game', new Set(['conectar', 'abrir', 'fechar'])],
   ['mindustry', new Set(['vincular', 'abrir', 'fechar'])],
-  ['voz', new Set(['vincular', 'desvincular', 'escolher', 'intensidade', 'normal'])],
 ]);
 
 function ownerOnly(interaction) {
@@ -133,8 +133,7 @@ export function memberCommandGuideDescription() {
     '**🎮 Integrações quando estiverem ativas**',
     '`/game status` e `/game acao` — Minecraft Interactive.',
     '`/mindustry status` e `/mindustry acao` — Mindustry Interactive.',
-    '`/voz status` e `/voz personagens` — consulta o Mio Voice.',
     '',
-    '🔒 Comandos de administração, moderação, vínculo e configuração são protegidos e não fazem parte da lista de membros.',
+    '🔒 Comandos de administração, moderação, vínculo, voz e configuração são protegidos e não fazem parte da lista de membros.',
   ].join('\n');
 }
