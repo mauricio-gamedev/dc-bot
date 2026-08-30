@@ -1,6 +1,7 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits } from 'discord.js';
 import { BRAND, STAFF_ROLE_NAMES } from './blueprint.js';
 import { memberCommandGuideDescription } from './commandAccess.js';
+import { stripLegacyMioVisuals } from './communityVisualCleanup.js';
 
 const GUIDE_MARKER = 'MIOJO_MEMBER_COMMANDS_V1';
 const GUIDE_CHANNEL = '🤖・comandos';
@@ -87,9 +88,21 @@ export async function ensureCommandGuide(guild) {
   const embed = guideEmbed();
   if (existing) {
     await existing.edit({ embeds: [embed] });
-    return { ok: true, channel, updated: true };
+  } else {
+    await channel.send({ embeds: [embed] });
   }
 
-  await channel.send({ embeds: [embed] });
-  return { ok: true, channel, created: true };
+  const cleanup = await stripLegacyMioVisuals(guild).catch((error) => ({
+    scanned: 0,
+    updated: 0,
+    error: error.message,
+  }));
+
+  return {
+    ok: true,
+    channel,
+    updated: Boolean(existing),
+    created: !existing,
+    visualCleanup: cleanup,
+  };
 }
