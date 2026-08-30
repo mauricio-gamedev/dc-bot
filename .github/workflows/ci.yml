@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
@@ -24,27 +24,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Syntax check
+      - name: Syntax, imports and community config
         run: npm run check
 
-  validate-visual-origin:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify active Mio character asset
-        shell: bash
-        run: |
-          set -euo pipefail
-          CHARACTER_URL="https://dc-bot-us5v.onrender.com/assets/mio-character.webp"
-          CHARACTER_FILE="$(mktemp)"
-          trap 'rm -f "$CHARACTER_FILE"' EXIT
-
-          curl -fsS --max-time 30 "$CHARACTER_URL" -o "$CHARACTER_FILE"
-          test "$(head -c 4 "$CHARACTER_FILE")" = "RIFF"
-          test "$(dd if="$CHARACTER_FILE" bs=1 skip=8 count=4 2>/dev/null)" = "WEBP"
-
-          echo "Active Mio character origin is serving a valid WEBP container."
-
   build-mindustry-android:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -106,6 +91,8 @@ jobs:
           git push
 
   build-voice-android:
+    permissions:
+      contents: write
     needs: build-mindustry-android
     runs-on: ubuntu-latest
     steps:
@@ -173,32 +160,22 @@ jobs:
 
   verify-render-deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [validate, validate-visual-origin, build-mindustry-android, build-voice-android]
+    needs: [validate, build-mindustry-android, build-voice-android]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify deployed bot version, commit and active visual asset
+      - name: Verify deployed bot version, commit and private mode
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          BASE_URL="https://dc-bot-us5v.onrender.com"
-          HEALTH_URL="$BASE_URL/health"
+          HEALTH_URL="https://dc-bot-us5v.onrender.com/health"
           LAST_BODY=""
-          CHARACTER_FILE="$(mktemp)"
-          trap 'rm -f "$CHARACTER_FILE"' EXIT
 
           for attempt in $(seq 1 90); do
             LAST_BODY="$(curl -fsS --max-time 20 "$HEALTH_URL" || true)"
-            CHARACTER_OK=0
-
-            if curl -fsS --max-time 20 "$BASE_URL/assets/mio-character.webp" -o "$CHARACTER_FILE" \
-              && [ "$(head -c 4 "$CHARACTER_FILE")" = "RIFF" ] \
-              && [ "$(dd if="$CHARACTER_FILE" bs=1 skip=8 count=4 2>/dev/null)" = "WEBP" ]; then
-              CHARACTER_OK=1
-            fi
 
             if BODY="$LAST_BODY" VERSION="$VERSION" node -e '
               try {
@@ -207,6 +184,7 @@ jobs:
                 const ok = health.ok === true
                   && health.discord === "online"
                   && health.version === process.env.VERSION
+                  && health.privateGuildMode === true
                   && typeof health.deployCommit === "string"
                   && health.deployCommit.length >= 7
                   && automation.enabled === true
@@ -217,8 +195,8 @@ jobs:
               } catch {
                 process.exit(1);
               }
-            ' && [ "$CHARACTER_OK" -eq 1 ]; then
-              echo "Render deploy healthy: version $VERSION, commit fingerprint and active Mio character asset verified."
+            '; then
+              echo "Render deploy healthy: version $VERSION, private guild mode and automation verified."
               echo "$LAST_BODY"
               exit 0
             fi
