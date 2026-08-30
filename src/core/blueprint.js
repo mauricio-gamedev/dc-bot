@@ -66,6 +66,7 @@ export const CATEGORY_BLUEPRINT = [
       { name: '📜・regras', type: ChannelType.GuildText, readOnly: true, topic: 'Regras oficiais da comunidade.' },
       { name: '📢・anúncios', type: ChannelType.GuildText, readOnly: true, topic: 'Comunicados gerais, eventos e avisos importantes da MiojoPlays.' },
       { name: '🎭・cargos', type: ChannelType.GuildText, readOnly: true, topic: 'Escolha cargos de interesse e veja benefícios da comunidade.' },
+      { name: '🤖・comandos', type: ChannelType.GuildText, readOnly: true, topic: 'Lista oficial de comandos que membros podem utilizar com segurança.' },
       { name: '🛡️・segurança', type: ChannelType.GuildText, readOnly: true, topic: 'Boas práticas de segurança, golpes comuns e orientação oficial da comunidade.' },
     ],
   },
