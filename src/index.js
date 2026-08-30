@@ -19,6 +19,8 @@ import { handleOwnerCoinCommand, ownerCoinCommandData } from './core/ownerCoins.
 import { eventCommandBuilder, handleEventButton, handleEventCommand } from './core/eventAgenda.js';
 import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
 import { handleIdentityCommand, identityCommandData } from './core/identityCommands.js';
+import { enforceCommandAccess } from './core/commandAccess.js';
+import { ensureCommandGuide } from './core/commandGuide.js';
 import {
   communityAutomationStatus,
   startCommunityAutomation,
@@ -77,7 +79,6 @@ const registeredCommandData = [
 ];
 
 const officialAssets = new Map([
-  ['mio-character.webp', { file: new URL('../assets/mio-character.webp', import.meta.url), contentType: 'image/webp' }],
   ['miojo-seal-static.png', { file: new URL('../assets/miojo-seal-static.png', import.meta.url), contentType: 'image/png' }],
   ['miojo-seal-animated.gif', { file: new URL('../assets/miojo-seal-animated.gif', import.meta.url), contentType: 'image/gif' }],
 ]);
@@ -115,6 +116,11 @@ async function serveOfficialAsset(req, res, pathname) {
 
 if (!token) {
   console.error('DISCORD_TOKEN não configurado. Copie .env.example para .env ou configure a variável no host.');
+  process.exit(1);
+}
+
+if (!guildId) {
+  console.error('DISCORD_GUILD_ID é obrigatório. O MiojoPlays Bot opera em modo privado e não registra comandos globais.');
   process.exit(1);
 }
 
@@ -158,13 +164,13 @@ const healthServer = http.createServer(async (req, res) => {
       deployCommit,
       character: CHARACTER.name,
       discord: ready ? 'online' : 'connecting',
+      privateGuildMode: true,
       kickLive: {
         enabled: kick.enabled,
         configured: kick.configured,
         polling: kick.polling,
         live: Boolean(kick.lastState?.isLive),
         slug: kick.slug,
-        sessionKey: kick.sessionKey,
       },
       kickInteractive: {
         enabled: kickChat.enabled,
@@ -201,6 +207,7 @@ const healthServer = http.createServer(async (req, res) => {
     res.writeHead(ready ? 200 : 503, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
     });
     res.end(JSON.stringify(body));
   } catch (error) {
@@ -222,27 +229,35 @@ healthServer.listen(port, '0.0.0.0', () => {
 async function registerCommands() {
   if (!client.application) throw new Error('Aplicação Discord ainda não está disponível.');
 
-  if (guildId) {
-    const guild = await client.guilds.fetch(guildId);
-    await guild.commands.set(registeredCommandData);
-    console.log(`Slash commands registrados instantaneamente em ${guild.name} (${guild.id}).`);
-    return;
-  }
+  const guild = await client.guilds.fetch(guildId);
+  await guild.commands.set(registeredCommandData);
+  console.log(`Slash commands privados registrados em ${guild.name} (${guild.id}).`);
+}
 
-  await client.application.commands.set(registeredCommandData);
-  console.log('Slash commands registrados globalmente. A propagação global pode levar alguns minutos.');
+async function enforcePrivateGuildScope() {
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === guildId) continue;
+    console.warn(`Servidor não autorizado detectado: ${guild.name} (${guild.id}). Saindo.`);
+    await guild.leave().catch((error) => {
+      console.error(`Falha ao sair do servidor não autorizado ${guild.id}:`, error.message);
+    });
+  }
 }
 
 async function ensurePanels() {
-  for (const guild of client.guilds.cache.values()) {
-    await guild.channels.fetch().catch(() => {});
-    const rolesChannel = guild.channels.cache.find(
-      (channel) => channel.name === '🎭・cargos' && channel.isTextBased(),
-    );
-    await ensureSelfRolePanel(guild, rolesChannel).catch((error) => {
-      console.error(`Falha ao garantir painel de cargos em ${guild.name}:`, error);
-    });
-  }
+  const guild = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return;
+
+  await guild.channels.fetch().catch(() => {});
+  const rolesChannel = guild.channels.cache.find(
+    (channel) => channel.name === '🎭・cargos' && channel.isTextBased(),
+  );
+  await ensureSelfRolePanel(guild, rolesChannel).catch((error) => {
+    console.error(`Falha ao garantir painel de cargos em ${guild.name}:`, error);
+  });
+  await ensureCommandGuide(guild).catch((error) => {
+    console.error(`Falha ao garantir guia de comandos em ${guild.name}:`, error);
+  });
 }
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -250,6 +265,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   readyClient.user.setActivity(`${CHARACTER.name} protege a comunidade`, { type: ActivityType.Watching });
 
   try {
+    await enforcePrivateGuildScope();
     await registerCommands();
     await ensurePanels();
     startCommunityAutomation(client);
@@ -259,8 +275,29 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 
+client.on(Events.GuildCreate, async (guild) => {
+  if (guild.id === guildId) return;
+  console.warn(`Instalação não autorizada bloqueada em ${guild.name} (${guild.id}).`);
+  await guild.leave().catch(() => {});
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.guildId && interaction.guildId !== guildId) {
+      if (interaction.isRepliable()) {
+        await interaction.reply({
+          content: '🔒 Este bot é privado e só funciona no servidor oficial configurado.',
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand()) {
+      const allowed = await enforceCommandAccess(interaction, { guildId });
+      if (!allowed) return;
+    }
+
     if (await handleKickLiveButton(interaction)) return;
     if (await handleKickInteractiveCommand(interaction)) return;
     if (await handleEventButton(interaction)) return;
@@ -292,6 +329,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
+  if (message.guildId !== guildId) return;
   try {
     await handleMessageProgress(message);
   } catch (error) {
@@ -301,6 +339,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 if (enableMemberEvents) {
   client.on(Events.GuildMemberAdd, async (member) => {
+    if (member.guild.id !== guildId) return;
     try {
       const memberRole = member.guild.roles.cache.find((role) => role.name === '👤・Membro');
       if (memberRole && memberRole.editable) await member.roles.add(memberRole, 'Entrada automática na comunidade');
