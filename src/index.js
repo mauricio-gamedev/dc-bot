@@ -21,6 +21,8 @@ import { handleSealCommand, sealCommandData } from './core/personalSeals.js';
 import { handleIdentityCommand, identityCommandData } from './core/identityCommands.js';
 import { enforceCommandAccess } from './core/commandAccess.js';
 import { ensureCommandGuide } from './core/commandGuide.js';
+import { cosmeticCommandData, handleCosmeticCommand } from './core/cosmeticCommands.js';
+import { autoEquipChatCosmetic, ensureCosmeticSystemPanel } from './core/chatCosmetics.js';
 import {
   communityAutomationStatus,
   startCommunityAutomation,
@@ -72,6 +74,7 @@ const registeredCommandData = [
   eventCommandBuilder.toJSON(),
   ...sealCommandData,
   identityCommandData,
+  cosmeticCommandData,
   minecraftCommandData,
   mindustryCommandData,
   kickInteractiveCommandData,
@@ -165,6 +168,7 @@ const healthServer = http.createServer(async (req, res) => {
       character: CHARACTER.name,
       discord: ready ? 'online' : 'connecting',
       privateGuildMode: true,
+      chatCosmetics: true,
       kickLive: {
         enabled: kick.enabled,
         configured: kick.configured,
@@ -258,6 +262,9 @@ async function ensurePanels() {
   await ensureCommandGuide(guild).catch((error) => {
     console.error(`Falha ao garantir guia de comandos em ${guild.name}:`, error);
   });
+  await ensureCosmeticSystemPanel(guild).catch((error) => {
+    console.error(`Falha ao garantir painel privado de cosméticos em ${guild.name}:`, error);
+  });
 }
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -305,6 +312,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await handleEventCommand(interaction)) return;
     if (await handleIdentityCommand(interaction)) return;
     if (await handleSealCommand(interaction)) return;
+    if (await handleCosmeticCommand(interaction)) return;
     if (await handleVoiceCommand(interaction)) return;
     if (await handleMindustryCommand(interaction)) return;
     if (await handleMinecraftCommand(interaction)) return;
@@ -331,7 +339,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.guildId !== guildId) return;
   try {
-    await handleMessageProgress(message);
+    const profile = await handleMessageProgress(message);
+    if (profile && !message.author.bot) {
+      await autoEquipChatCosmetic(message.guild, message.author.id, profile).catch((error) => {
+        console.warn(`Cosmético de chat ${message.author.id}: ${error.message}`);
+      });
+    }
   } catch (error) {
     console.error('Falha no sistema de progressão:', error);
   }
