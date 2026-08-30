@@ -1,4 +1,4 @@
-import { MessageFlags, SlashCommandBuilder } from 'discord.js';
+import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 import { mutateProfile } from './communityStore.js';
 
 const MAX_OWNER_COINS = 9_000_000_000_000;
@@ -6,6 +6,7 @@ const MAX_OWNER_COINS = 9_000_000_000_000;
 export const ownerCoinCommandData = new SlashCommandBuilder()
   .setName('coins-dono')
   .setDescription('Controle exclusivo de MiojoCoins para o dono do servidor.')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption((option) =>
     option
       .setName('modo')
