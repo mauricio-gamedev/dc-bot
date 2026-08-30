@@ -1,0 +1,188 @@
+name: Build GTA SA-MP Mobile
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/gta-samp-build.yml'
+      - 'integrations/gta/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-gta-samp-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      SAMP_REPOSITORY: kuzia15/SAMP-Mobile
+      SAMP_REF: 5e531514a0bbb3d56b1a72e51fa44b18cfaf2ee2
+      ANDROID_PLATFORM: '36'
+      ANDROID_BUILD_TOOLS: '36.0.0'
+      ANDROID_NDK: '26.2.11394342'
+      CMAKE_VERSION: '3.22.1'
+
+    steps:
+      - name: Checkout build harness
+        uses: actions/checkout@v4
+
+      - name: Checkout SA-MP Mobile GTA 2.11
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SAMP_REPOSITORY }}
+          ref: ${{ env.SAMP_REF }}
+          path: samp-mobile
+          fetch-depth: 1
+
+      - name: Restore bundled native sources
+        working-directory: samp-mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="app/src/main/cpp/cpp.zip"
+          EXPECTED="app/src/main/cpp/samp/gui/samp_widgets/playerTabList.h"
+          RGBA_EXPECTED="app/src/main/cpp/samp/game/RGBA.h"
+
+          if [[ -f "$EXPECTED" ]]; then
+            echo "Native source tree is already complete."
+          else
+            if [[ ! -f "$ZIP" ]]; then
+              echo "Missing both $EXPECTED and bundled native archive $ZIP" >&2
+              exit 1
+            fi
+
+            rm -rf .ci-cpp-bundle
+            mkdir -p .ci-cpp-bundle
+            unzip -q "$ZIP" -d .ci-cpp-bundle
+
+            FOUND="$(find .ci-cpp-bundle -type f -iname 'playerTabList.h' -print -quit)"
+            if [[ -z "$FOUND" ]]; then
+              echo "Bundled cpp.zip does not contain playerTabList.h" >&2
+              find .ci-cpp-bundle -maxdepth 5 -type d | sort | head -200
+              exit 1
+            fi
+
+            case "$FOUND" in
+              */samp/gui/samp_widgets/*)
+                ROOT="${FOUND%%/samp/gui/samp_widgets/*}"
+                ;;
+              *)
+                echo "Found playerTabList.h at unexpected archive path: $FOUND" >&2
+                exit 1
+                ;;
+            esac
+
+            echo "Restoring native source overlay from: $ROOT"
+            rsync -a "$ROOT/" app/src/main/cpp/
+          fi
+
+          if [[ ! -e "$EXPECTED" ]]; then
+            ACTUAL="$(find app/src/main/cpp/samp/gui/samp_widgets -maxdepth 1 -type f -iname 'playerTabList.h' -print -quit)"
+            if [[ -n "$ACTUAL" ]]; then
+              ln -s "$(basename "$ACTUAL")" "$EXPECTED"
+            fi
+          fi
+
+          if [[ ! -e "$RGBA_EXPECTED" ]]; then
+            RGBA_ACTUAL="$(find app/src/main/cpp/samp/game -maxdepth 1 -type f -iname 'RGBA.h' -print -quit)"
+            if [[ -n "$RGBA_ACTUAL" ]]; then
+              ln -s "$(basename "$RGBA_ACTUAL")" "$RGBA_EXPECTED"
+            fi
+          fi
+
+          test -f "$EXPECTED"
+          test -f "$RGBA_EXPECTED"
+
+          rm -f \
+            app/src/main/jniLibs/arm64-v8a/libbass.so \
+            app/src/main/jniLibs/arm64-v8a/libbass_ssl.so
+
+          echo "Restored native sources and normalized Linux packaging inputs."
+
+      - name: Patch Android runtime and native defaults
+        working-directory: samp-mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../integrations/gta/patch_runtime.py
+          python3 ../integrations/gta/patch_native_defaults.py
+          python3 ../integrations/gta/patch_texture_inline.py
+
+      - name: Use Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK}" \
+            "cmake;${CMAKE_VERSION}"
+
+      - name: Build ARM64 debug APK
+        working-directory: samp-mobile
+        shell: bash
+        run: |
+          set -uo pipefail
+          chmod +x ./gradlew
+          set +e
+          ./gradlew --no-daemon --stacktrace clean assembleDebug 2>&1 | tee ../gta-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$BUILD_STATUS" -ne 0 ]]; then
+            {
+              echo "Build failed with exit code $BUILD_STATUS"
+              echo
+              echo "First compiler/build errors:"
+              grep -nEi "fatal error:|(^|[^[:alpha:]])error:|FAILED:|ninja: build stopped|Execution failed for task|files found with path" ../gta-build.log | head -120 || true
+            } | tee ../gta-build-errors.txt
+          fi
+
+          exit "$BUILD_STATUS"
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA-SAMP-Mobile-build-diagnostics
+          path: |
+            gta-build.log
+            gta-build-errors.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="samp-mobile/app/build/outputs/apk/debug/GTA-2.11-debug.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
+          sha256sum "$APK" | tee GTA-2.11-debug.apk.sha256
+          cp "$APK" GTA-2.11-debug.apk
+          ls -lh GTA-2.11-debug.apk GTA-2.11-debug.apk.sha256
+
+      - name: Upload GTA SA-MP Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA-SAMP-Mobile-Android-arm64
+          path: |
+            GTA-2.11-debug.apk
+            GTA-2.11-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
