@@ -1,17 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import { BRAND } from './blueprint.js';
 
-const OFFICIAL_ASSET_BASE = 'https://dc-bot-us5v.onrender.com/assets';
-const ASSET_VERSIONS = Object.freeze({
-  character: 'a11b18ed09704b11de301704edb572c778b58df9',
-});
-
-function officialAsset(filename, version) {
-  return `${OFFICIAL_ASSET_BASE}/${filename}?v=${version}`;
-}
-
-const DEFAULT_CHARACTER_ASSET = officialAsset('mio-character.webp', ASSET_VERSIONS.character);
-
 export const CHARACTER = {
   name: 'Mio',
   title: 'Guardião da MiojoPlays',
@@ -41,14 +30,18 @@ function validHttpUrl(value) {
 }
 
 export function characterAssets() {
-  const avatar = validHttpUrl(process.env.MIO_CHARACTER_IMAGE_URL) ?? DEFAULT_CHARACTER_ASSET;
-  const banner = validHttpUrl(process.env.MIO_CHARACTER_BANNER_URL);
-  const profile = validHttpUrl(process.env.MIO_CHARACTER_PROFILE_URL) ?? banner ?? avatar;
-  // Os arquivos de selo empacotados atuais não possuem assinatura PNG/GIF válida.
-  // Até serem substituídos conscientemente por assets válidos, só aceitamos overrides explícitos.
+  // A arte do Mio foi desativada nos embeds da comunidade porque o cliente do
+  // Discord estava renderizando o asset como um bloco cinza em alguns casos.
+  // Mantemos a identidade/persona textual e permitimos apenas selos opcionais.
   const badge = validHttpUrl(process.env.MIO_BADGE_IMAGE_URL);
   const animatedBadge = validHttpUrl(process.env.MIO_BADGE_ANIMATED_URL);
-  return { avatar, banner, profile, badge, animatedBadge };
+  return {
+    avatar: null,
+    banner: null,
+    profile: null,
+    badge,
+    animatedBadge,
+  };
 }
 
 function sealAsset(assets, mode = 'auto') {
@@ -84,8 +77,7 @@ export function characterEmbed({
 
   if (presentation === 'hero') {
     if (thumbnail && selectedSeal) embed.setThumbnail(selectedSeal);
-    const visual = explicitImage ?? assets.profile ?? assets.avatar;
-    if (visual) embed.setImage(visual);
+    if (explicitImage) embed.setImage(explicitImage);
     return embed;
   }
 
@@ -95,7 +87,7 @@ export function characterEmbed({
     return embed;
   }
 
-  if (thumbnail && assets.avatar) embed.setThumbnail(assets.avatar);
+  if (thumbnail && selectedSeal) embed.setThumbnail(selectedSeal);
   if (explicitImage) embed.setImage(explicitImage);
   return embed;
 }
@@ -158,10 +150,10 @@ export function mascotReply(text, username) {
 export function characterVisualStatus() {
   const assets = characterAssets();
   return {
-    ready: Boolean(assets.avatar),
-    heroReady: Boolean(assets.profile),
+    ready: true,
+    heroReady: true,
     badgeReady: Boolean(assets.badge || assets.animatedBadge),
     assets,
-    fallback: `${BRAND.name} usa o personagem oficial empacotado no repositório; selos inválidos ficam desativados até reposição válida.`,
+    fallback: `${BRAND.name} mantém a identidade textual do Mio; a imagem do personagem está desativada nos embeds para evitar a renderização cinza observada no Discord.`,
   };
 }
