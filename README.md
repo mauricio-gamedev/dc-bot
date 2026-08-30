@@ -14,6 +14,7 @@ O bot agora trabalha em **modo de servidor único**:
 - ações de dono, staff e moderação continuam com validações próprias como segunda camada;
 - comandos recebem cooldown básico contra abuso e `/sugerir` possui cooldown maior;
 - `/coins-dono` também fica oculto de membros comuns pelas permissões nativas do Discord;
+- Mio Voice é exclusivo do dono do servidor;
 - respostas de negação e erros operacionais são privadas quando apropriado.
 
 A configuração no Discord Developer Portal deve continuar com o bot **não público** e sem link padrão de instalação.
@@ -45,10 +46,9 @@ Principais comandos de membros:
 - Progressão: `/missoes`, `/missao`, `/conquistas`;
 - Identidade: `/selos`, `/selo`, `/identidade`;
 - Comunidade: `/mascote`, `/sugerir`;
-- Game Interactive, quando ativo: `/game status`, `/game acao`, `/mindustry status`, `/mindustry acao`;
-- Mio Voice para consulta: `/voz status`, `/voz personagens`.
+- Game Interactive, quando ativo: `/game status`, `/game acao`, `/mindustry status`, `/mindustry acao`.
 
-Comandos de setup, reparo, moderação, publicação, vínculo e configuração não são apresentados como comandos de membros e são bloqueados no runtime quando o usuário não possui autorização.
+Comandos de setup, reparo, moderação, publicação, vínculo, Mio Voice e configuração não são apresentados como comandos de membros e são bloqueados no runtime quando o usuário não possui autorização.
 
 ## 🐈‍⬛ Mio — identidade sem imagem nos embeds
 
@@ -93,7 +93,7 @@ O projeto mantém as integrações existentes sem abrir seus controles privados 
 - Mio Voice Android;
 - agenda e participação em eventos.
 
-Subcomandos que vinculam contas/dispositivos, abrem ou fecham sessões e alteram configurações permanecem exclusivos do dono quando previsto pelo módulo.
+Subcomandos que vinculam contas/dispositivos, abrem ou fecham sessões e alteram configurações permanecem exclusivos do dono quando previsto pelo módulo. O Mio Voice inteiro fica reservado ao dono.
 
 ## Estrutura gerenciada
 
