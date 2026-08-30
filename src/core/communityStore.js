@@ -29,6 +29,10 @@ function defaultProfile(userId) {
     eventParticipationIds: [],
     ownedSeals: [],
     equippedSeal: '',
+    chatCosmetic: '',
+    chatCosmeticOptOut: false,
+    chatNicknameBase: '',
+    chatNicknameCaptured: false,
     mindustryLinkHash: '',
     mindustryLinkedAt: 0,
     kickOAuthRefreshEncrypted: '',
@@ -80,6 +84,14 @@ function normalizeProfile(userId, raw = {}) {
   data.equippedSeal = typeof data.equippedSeal === 'string' && data.equippedSeal.length <= 80
     ? data.equippedSeal
     : '';
+  data.chatCosmetic = typeof data.chatCosmetic === 'string' && data.chatCosmetic.length <= 80
+    ? data.chatCosmetic
+    : '';
+  data.chatCosmeticOptOut = Boolean(data.chatCosmeticOptOut);
+  data.chatNicknameBase = typeof data.chatNicknameBase === 'string'
+    ? data.chatNicknameBase.slice(0, 32)
+    : '';
+  data.chatNicknameCaptured = Boolean(data.chatNicknameCaptured);
   data.mindustryLinkHash = typeof data.mindustryLinkHash === 'string' && /^[a-f0-9]{64}$/i.test(data.mindustryLinkHash)
     ? data.mindustryLinkHash.toLowerCase()
     : '';
@@ -206,6 +218,10 @@ function serializeProfile(profile) {
     eventParticipationIds: profile.eventParticipationIds,
     ownedSeals: profile.ownedSeals,
     equippedSeal: profile.equippedSeal,
+    chatCosmetic: profile.chatCosmetic,
+    chatCosmeticOptOut: profile.chatCosmeticOptOut,
+    chatNicknameBase: profile.chatNicknameBase,
+    chatNicknameCaptured: profile.chatNicknameCaptured,
     mindustryLinkHash: profile.mindustryLinkHash,
     mindustryLinkedAt: profile.mindustryLinkedAt,
     kickOAuthRefreshEncrypted: profile.kickOAuthRefreshEncrypted,
